@@ -80,7 +80,7 @@ def build_game_mzf(output_path):
     L("TOP_BORDER_LOOP")
     emit(0x36, 0x5C)       # LD (HL), 0x5C
     emit(0x23)             # INC HL
-    emit(0x10, 0xFC)       # DJNZ TOP_BORDER_LOOP
+    emit(0x10, 0xFB)       # DJNZ TOP_BORDER_LOOP (-5 bytes)
 
     # Draw bottom border (row 22, 40 blocks of 0x5C)
     emit(0x21, 0x70, 0xD3) # LD HL, 0xD370 (row 22: 22 * 40 = 880 = 0x370 -> 0xD370)
@@ -88,7 +88,7 @@ def build_game_mzf(output_path):
     L("BOT_BORDER_LOOP")
     emit(0x36, 0x5C)       # LD (HL), 0x5C
     emit(0x23)             # INC HL
-    emit(0x10, 0xFC)       # DJNZ BOT_BORDER_LOOP
+    emit(0x10, 0xFB)       # DJNZ BOT_BORDER_LOOP (-5 bytes)
 
     # Draw vertical side borders (rows 4 to 21)
     emit(0x06, 0x12)       # LD B, 18 rows
@@ -343,20 +343,19 @@ def build_game_mzf(output_path):
     L("GET_PLAYER_VRAM_ADDR")
     emit(0x3A, 0x01, 0x11) # LD A, (Y)
     emit(0x6F); emit(0x26, 0x00) # LD L, A; LD H, 0 (HL = Y)
-    # Multiply by 40: HL * 40 = (HL * 8 + HL * 2) * 4
-    # simpler: HL * 32 + HL * 8
-    emit(0x29)             # HL * 2
-    emit(0x29)             # HL * 4
-    emit(0x29)             # HL * 8
-    emit(0xeb)             # EX DE, HL (DE = Y * 8)
-    emit(0x29)             # HL * 16
-    emit(0x29)             # HL * 32
-    emit(0x19)             # HL = Y * 32 + Y * 8 = Y * 40
+    # Multiply by 40: HL * 40 = ((Y * 4) + Y) * 8
+    emit(0x54); emit(0x5D) # LD D, H; LD E, L (DE = Y)
+    emit(0x29)             # ADD HL, HL (Y * 2)
+    emit(0x29)             # ADD HL, HL (Y * 4)
+    emit(0x19)             # ADD HL, DE (Y * 5)
+    emit(0x29)             # ADD HL, HL (Y * 10)
+    emit(0x29)             # ADD HL, HL (Y * 20)
+    emit(0x29)             # ADD HL, HL (Y * 40)
     # Add X
     emit(0x3A, 0x00, 0x11) # LD A, (X)
     emit(0x5F); emit(0x16, 0x00) # LD E, A; LD D, 0
     emit(0x19)             # ADD HL, DE
-    # Add 0xD000
+    # Add 0xD000 (VRAM Text Base)
     emit(0x11, 0x00, 0xD0) # LD DE, 0xD000
     emit(0x19)             # ADD HL, DE
     emit(0xC9)             # RET
@@ -365,18 +364,21 @@ def build_game_mzf(output_path):
     L("DRAW_FOOD")
     # HL = 0xD000 + FoodY * 40 + FoodX
     emit(0x3A, 0x05, 0x11) # LD A, (FoodY)
-    emit(0x6F); emit(0x26, 0x00)
-    emit(0x29); emit(0x29); emit(0x29) # * 8
-    emit(0xEB)
-    emit(0x29); emit(0x29)             # * 32
-    emit(0x19)
+    emit(0x6F); emit(0x26, 0x00) # LD L, A; LD H, 0
+    emit(0x54); emit(0x5D) # LD D, H; LD E, L (DE = FoodY)
+    emit(0x29)             # ADD HL, HL (* 2)
+    emit(0x29)             # ADD HL, HL (* 4)
+    emit(0x19)             # ADD HL, DE (* 5)
+    emit(0x29)             # ADD HL, HL (* 10)
+    emit(0x29)             # ADD HL, HL (* 20)
+    emit(0x29)             # ADD HL, HL (* 40)
     emit(0x3A, 0x04, 0x11) # FoodX
     emit(0x5F); emit(0x16, 0x00)
     emit(0x19)
     emit(0x11, 0x00, 0xD0)
     emit(0x19)
     emit(0x36, 0x2A)       # LD (HL), '*' (character code 0x2A)
-    # Color Yellow:
+    # Color Yellow / Red:
     emit(0x11, 0x00, 0x08)
     emit(0x19)
     emit(0x36, 0x76)       # LD (HL), 0x76 (Yellow / Red)
