@@ -1,0 +1,795 @@
+/* controls.css — Sharp MZ-800 WebAssembly Player Styling */
+:root {
+    --bg-color: #121316;
+    --panel-bg: #1c1e24;
+    --panel-border: #2d313b;
+    --accent-red: #d03400;
+    --accent-blue: #24ccff;
+    --accent-green: #54ff54;
+    --text-primary: #e6e8ee;
+    --text-muted: #8a8f9d;
+    --btn-bg: #272a33;
+    --btn-hover: #333845;
+    --btn-active: #d03400;
+}
+
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    -webkit-tap-highlight-color: transparent;
+}
+
+html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background-color: var(--bg-color);
+    color: var(--text-primary);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, monospace;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: manipulation;
+}
+
+#app-container {
+    display: flex;
+    flex-direction: column;
+    width: 100vw;
+    height: 100vh;
+    height: 100dvh;
+    position: relative;
+}
+
+/* Toolbar Header */
+#toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 12px;
+    background-color: var(--panel-bg);
+    border-bottom: 1px solid var(--panel-border);
+    z-index: 10;
+    gap: 8px;
+}
+
+.brand {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 700;
+    font-size: 0.95rem;
+    letter-spacing: 0.5px;
+}
+
+.brand .logo-badge {
+    background: linear-gradient(135deg, #c02000, #ff5020);
+    color: #fff;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 0.75rem;
+    font-weight: 800;
+}
+
+.toolbar-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.btn {
+    background-color: var(--btn-bg);
+    color: var(--text-primary);
+    border: 1px solid var(--panel-border);
+    padding: 5px 10px;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    transition: background-color 0.15s, border-color 0.15s, transform 0.05s;
+}
+
+.btn:hover {
+    background-color: var(--btn-hover);
+    border-color: #4a5163;
+}
+
+.btn:active {
+    background-color: var(--btn-active);
+    transform: scale(0.97);
+}
+
+.btn.active {
+    background-color: #d03400;
+    border-color: #ff5020;
+    color: #fff;
+}
+
+select.btn-select {
+    background-color: var(--btn-bg);
+    color: var(--text-primary);
+    border: 1px solid var(--panel-border);
+    padding: 5px 8px;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    cursor: pointer;
+    outline: none;
+}
+
+select.btn-select:hover {
+    background-color: var(--btn-hover);
+}
+
+/* Screen Area */
+#screen-viewport {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    background: #000;
+    overflow: hidden;
+    padding: 6px;
+}
+
+.crt-container {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 0 35px rgba(0, 0, 0, 0.9), inset 0 0 20px rgba(0, 0, 0, 0.7);
+    border-radius: 6px;
+    overflow: hidden;
+    background-color: #000;
+    max-width: 100%;
+    max-height: 100%;
+    transition: width 0.15s ease, height 0.15s ease;
+}
+
+#mz-canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: fill;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    background-color: #000;
+}
+
+/* CRT Scanline Overlay */
+.crt-scanlines::after {
+    content: " ";
+    display: block;
+    position: absolute;
+    top: 0; left: 0; bottom: 0; right: 0;
+    background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.3) 50%);
+    background-size: 100% 4px;
+    z-index: 2;
+    pointer-events: none;
+    opacity: 0.6;
+}
+
+/* Status Overlay */
+#status-overlay {
+    position: absolute;
+    top: 10px;
+    left: 12px;
+    background: rgba(18, 19, 22, 0.8);
+    backdrop-filter: blur(4px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 0.72rem;
+    font-family: monospace;
+    display: flex;
+    gap: 10px;
+    z-index: 5;
+    pointer-events: none;
+}
+
+.status-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background-color: #555;
+}
+
+.status-dot.active {
+    background-color: var(--accent-green);
+    box-shadow: 0 0 6px var(--accent-green);
+}
+
+/* Virtual Game Controller Overlay */
+#touch-controller {
+    position: relative;
+    width: 100%;
+    height: 200px;
+    min-height: 200px;
+    min-height: max(200px, 22dvh);
+    background: linear-gradient(to bottom, #181a20, #101115);
+    border-top: 1px solid var(--panel-border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 20px;
+    touch-action: none;
+    user-select: none;
+    z-index: 8;
+}
+
+/* Left: D-Pad Container */
+.dpad-container {
+    position: relative;
+    width: 140px;
+    height: 140px;
+    flex-shrink: 0;
+}
+
+.dpad-btn {
+    position: absolute;
+    z-index: 2;
+    background: #2b2e38;
+    border: 2px solid #3c4150;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    touch-action: none;
+    cursor: pointer;
+    color: #a8b0c2;
+    font-size: 1.2rem;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.1), 0 3px 6px rgba(0,0,0,0.4);
+    transition: background 0.05s, transform 0.05s;
+}
+
+.dpad-btn:active, .dpad-btn.pressed {
+    background: #d03400;
+    color: #fff;
+    border-color: #ff5020;
+    transform: scale(0.94);
+}
+
+.dpad-up {
+    top: 0;
+    left: 48px;
+    width: 44px;
+    height: 48px;
+    border-radius: 8px 8px 2px 2px;
+}
+
+.dpad-down {
+    bottom: 0;
+    left: 48px;
+    width: 44px;
+    height: 48px;
+    border-radius: 2px 2px 8px 8px;
+}
+
+.dpad-left {
+    top: 48px;
+    left: 0;
+    width: 48px;
+    height: 44px;
+    border-radius: 8px 2px 2px 8px;
+}
+
+.dpad-right {
+    top: 48px;
+    right: 0;
+    width: 48px;
+    height: 44px;
+    border-radius: 2px 8px 8px 2px;
+}
+
+.dpad-center {
+    position: absolute;
+    z-index: 1;
+    top: 48px;
+    left: 48px;
+    width: 44px;
+    height: 44px;
+    background: #23262f;
+    border: 1px solid #343946;
+    border-radius: 4px;
+    pointer-events: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.dpad-center::after {
+    content: '';
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: #1c1e24;
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.6);
+}
+
+/* Center: Auxiliary / System Keys (BREAK, CR/ENTER, SPACE) */
+.center-keys {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    align-items: center;
+    justify-content: center;
+    min-width: 95px;
+    max-width: 125px;
+    flex-shrink: 0;
+    margin: 0 4px;
+}
+
+.sys-btn {
+    background: #272a33;
+    color: #9da4b4;
+    border: 1px solid #3c4150;
+    border-radius: 16px;
+    padding: 6px 14px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    cursor: pointer;
+    touch-action: none;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+    width: 100%;
+    text-align: center;
+}
+
+.sys-btn:active, .sys-btn.pressed {
+    background: #474c5d;
+    color: #fff;
+    border-color: #8a94ac;
+    transform: scale(0.95);
+}
+
+.sys-btn-wide {
+    width: 100%;
+    min-width: 95px;
+    text-align: center;
+    border-radius: 8px;
+    padding: 8px 14px;
+}
+
+/* BREAK: Isolated at top of center column, far from D-pad and Action buttons */
+.danger-btn {
+    background: rgba(168, 28, 28, 0.3);
+    color: #ff9999;
+    border: 1px solid rgba(255, 60, 60, 0.45);
+    border-radius: 12px;
+    padding: 3px 12px;
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+    cursor: pointer;
+    touch-action: none;
+    opacity: 0.8;
+    transition: background 0.1s, opacity 0.1s, transform 0.05s;
+}
+
+.danger-btn:active, .danger-btn.pressed {
+    background: #c02020;
+    border-color: #ff4444;
+    color: #fff;
+    opacity: 1;
+    transform: scale(0.94);
+}
+
+/* Right: Action Buttons (A, B) */
+.action-buttons-container {
+    position: relative;
+    width: 140px;
+    height: 140px;
+}
+
+.act-btn {
+    position: absolute;
+    width: 54px;
+    height: 54px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #2f3440, #22252e);
+    border: 2px solid #434a5c;
+    color: #e6e8ee;
+    font-size: 1.1rem;
+    font-weight: 800;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    touch-action: none;
+    cursor: pointer;
+    box-shadow: inset 0 2px 0 rgba(255,255,255,0.15), 0 4px 8px rgba(0,0,0,0.5);
+    transition: background 0.05s, transform 0.05s;
+}
+
+.act-btn span.label {
+    font-size: 0.55rem;
+    font-weight: 600;
+    color: #8c93a4;
+    text-transform: uppercase;
+}
+
+.act-btn:active, .act-btn.pressed {
+    background: linear-gradient(135deg, #d03400, #f05420);
+    border-color: #ff7040;
+    color: #fff;
+    transform: scale(0.92);
+}
+
+.act-btn:active span.label, .act-btn.pressed span.label {
+    color: #ffd0c0;
+}
+
+/* Button Positions */
+.act-btn-a {
+    bottom: 8px;
+    right: 8px;
+}
+
+.act-btn-b {
+    top: 8px;
+    right: 56px;
+}
+
+/* "More" toolbar toggle — hidden on wide screens where everything fits inline */
+.toolbar-more-btn {
+    display: none;
+}
+
+/* Mobile & Fullscreen Adjustments */
+@media (max-width: 600px) {
+    #touch-controller {
+        height: 180px;
+        min-height: 180px;
+        padding: 6px 12px;
+    }
+    .dpad-container {
+        width: 120px;
+        height: 120px;
+    }
+    .dpad-up, .dpad-down {
+        left: 40px;
+        width: 40px;
+        height: 40px;
+    }
+    .dpad-left, .dpad-right {
+        top: 40px;
+        width: 40px;
+        height: 40px;
+    }
+    .dpad-center {
+        top: 40px;
+        left: 40px;
+        width: 40px;
+        height: 40px;
+    }
+    .action-buttons-container {
+        width: 120px;
+        height: 120px;
+    }
+    .act-btn {
+        width: 48px;
+        height: 48px;
+    }
+    .act-btn-b {
+        right: 48px;
+    }
+    .center-keys {
+        min-width: 85px;
+        max-width: 105px;
+        gap: 6px;
+    }
+    .sys-btn-wide {
+        min-width: 85px;
+        padding: 7px 10px;
+        font-size: 0.7rem;
+    }
+    .sys-btn {
+        padding: 5px 8px;
+        font-size: 0.68rem;
+    }
+    .danger-btn {
+        padding: 3px 10px;
+        font-size: 0.62rem;
+    }
+}
+
+/* Very narrow phones (<= 380px width) */
+@media (max-width: 380px) {
+    #touch-controller {
+        height: 165px;
+        min-height: 165px;
+        padding: 4px 6px;
+    }
+    .dpad-container {
+        width: 110px;
+        height: 110px;
+    }
+    .dpad-up, .dpad-down {
+        left: 36px;
+        width: 38px;
+        height: 38px;
+    }
+    .dpad-left, .dpad-right {
+        top: 36px;
+        width: 38px;
+        height: 38px;
+    }
+    .dpad-center {
+        top: 36px;
+        left: 36px;
+        width: 38px;
+        height: 38px;
+    }
+    .action-buttons-container {
+        width: 110px;
+        height: 110px;
+    }
+    .act-btn {
+        width: 44px;
+        height: 44px;
+    }
+    .act-btn-b {
+        right: 44px;
+    }
+    .center-keys {
+        min-width: 76px;
+        max-width: 88px;
+        gap: 5px;
+    }
+    .sys-btn-wide {
+        min-width: 76px;
+        padding: 5px 6px;
+        font-size: 0.65rem;
+    }
+    .sys-btn {
+        padding: 4px 6px;
+        font-size: 0.62rem;
+    }
+    .danger-btn {
+        padding: 2px 8px;
+        font-size: 0.6rem;
+    }
+}
+
+/* Landscape phones: the controller bar competes with a very short viewport */
+@media (max-height: 500px) {
+    #touch-controller {
+        height: 130px;
+        min-height: 130px;
+        padding: 4px 18px;
+    }
+    .danger-btn {
+        padding: 2px 8px;
+        font-size: 0.58rem;
+    }
+    .dpad-container {
+        width: 100px;
+        height: 100px;
+    }
+    .dpad-up, .dpad-down {
+        left: 32px;
+        width: 36px;
+        height: 32px;
+    }
+    .dpad-left, .dpad-right {
+        top: 32px;
+        width: 32px;
+        height: 36px;
+    }
+    .dpad-center {
+        top: 32px;
+        left: 32px;
+        width: 36px;
+        height: 36px;
+    }
+    .action-buttons-container {
+        width: 100px;
+        height: 100px;
+    }
+    .act-btn {
+        width: 42px;
+        height: 42px;
+    }
+    .act-btn-b {
+        right: 42px;
+    }
+    .center-keys {
+        gap: 4px;
+        min-width: 80px;
+        max-width: 100px;
+    }
+    .sys-btn-wide {
+        padding: 4px 8px;
+        font-size: 0.65rem;
+        min-width: 80px;
+    }
+    .sys-btn {
+        padding: 3px 6px;
+        font-size: 0.62rem;
+    }
+}
+
+/* Compact toolbar on narrow phones: collapse secondary actions behind ⚙️ */
+@media (max-width: 480px) {
+    #toolbar {
+        padding: 4px 6px;
+        gap: 4px;
+        position: relative;
+    }
+    .brand .logo-svg {
+        height: 18px;
+    }
+    select.btn-select {
+        max-width: 130px;
+        font-size: 0.74rem;
+        padding: 4px 6px;
+    }
+    #toolbar .btn {
+        padding: 4px 6px;
+        font-size: 0.74rem;
+        gap: 2px;
+    }
+    .toolbar-group {
+        gap: 4px;
+    }
+    .toolbar-more-btn {
+        display: inline-flex;
+    }
+    .toolbar-secondary {
+        display: none;
+        position: absolute;
+        top: 100%;
+        right: 8px;
+        margin-top: 6px;
+        flex-direction: column;
+        align-items: stretch;
+        background: var(--panel-bg);
+        border: 1px solid var(--panel-border);
+        border-radius: 6px;
+        padding: 8px;
+        box-shadow: 0 8px 20px rgba(0, 0, 0, 0.5);
+        z-index: 20;
+    }
+    .toolbar-secondary.open {
+        display: flex;
+    }
+}
+
+/* Floating overlay mode when fullscreen or keyboard present */
+body.hide-controls #touch-controller {
+    display: none !important;
+}
+
+/* Debug & Error Modal */
+.modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background: rgba(0, 0, 0, 0.8);
+    backdrop-filter: blur(4px);
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+}
+
+.modal-card {
+    background: var(--panel-bg);
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    max-width: 650px;
+    width: 100%;
+    max-height: 90vh;
+    overflow-y: auto;
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.7);
+    display: flex;
+    flex-direction: column;
+    color: var(--text-primary);
+    font-size: 13.5px;
+}
+
+.modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--panel-border);
+    background: #232730;
+}
+
+.modal-title {
+    font-weight: 600;
+    font-size: 15px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: #ff9944;
+}
+
+.modal-close {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: 22px;
+    cursor: pointer;
+    line-height: 1;
+}
+
+.modal-close:hover {
+    color: #fff;
+}
+
+.modal-body {
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    line-height: 1.5;
+}
+
+.modal-log-box {
+    background: #0d0e11;
+    border: 1px solid var(--panel-border);
+    border-radius: 4px;
+    padding: 10px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 11.5px;
+    max-height: 160px;
+    overflow-y: auto;
+    color: #a0a6b5;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+.modal-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.modal-btn {
+    padding: 8px 14px;
+    border-radius: 4px;
+    border: 1px solid var(--panel-border);
+    background: var(--btn-bg);
+    color: var(--text-primary);
+    cursor: pointer;
+    font-size: 13px;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.modal-btn:hover {
+    background: var(--btn-hover);
+}
+
+.modal-btn-primary {
+    background: var(--accent-red);
+    border-color: #e04410;
+    color: #fff;
+    font-weight: 500;
+}
+
+.modal-btn-primary:hover {
+    background: #e04410;
+}
+
