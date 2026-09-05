@@ -23,7 +23,14 @@
 html, body {
     width: 100%;
     height: 100%;
+    margin: 0;
+    padding: 0;
     overflow: hidden;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
     background-color: var(--bg-color);
     color: var(--text-primary);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, monospace;
@@ -35,11 +42,17 @@ html, body {
 #app-container {
     display: flex;
     flex-direction: column;
-    width: 100vw;
-    height: 100vh;
-    height: 100dvh;
+    width: 100%;
+    height: 100%;
+    max-height: 100%;
     position: relative;
+    overflow: hidden;
+    box-sizing: border-box;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-left: env(safe-area-inset-left, 0px);
+    padding-right: env(safe-area-inset-right, 0px);
 }
+
 
 /* Toolbar Header */
 #toolbar {
@@ -216,19 +229,21 @@ select.btn-select:hover {
 #touch-controller {
     position: relative;
     width: 100%;
-    height: 200px;
-    min-height: 200px;
-    min-height: max(200px, 22dvh);
+    flex-shrink: 0;
+    height: auto;
+    min-height: calc(150px + env(safe-area-inset-bottom, 0px));
     background: linear-gradient(to bottom, #181a20, #101115);
     border-top: 1px solid var(--panel-border);
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 8px 20px;
+    padding: 10px 20px max(14px, calc(8px + env(safe-area-inset-bottom, 0px))) 20px;
     touch-action: none;
     user-select: none;
     z-index: 8;
+    box-sizing: border-box;
 }
+
 
 /* Left: D-Pad Container */
 .dpad-container {
@@ -451,10 +466,14 @@ select.btn-select:hover {
 /* Mobile & Fullscreen Adjustments */
 @media (max-width: 600px) {
     #touch-controller {
-        height: 180px;
-        min-height: 180px;
-        padding: 6px 12px;
+        height: auto;
+        min-height: calc(134px + env(safe-area-inset-bottom, 0px));
+        padding-top: 6px;
+        padding-bottom: max(14px, calc(6px + env(safe-area-inset-bottom, 0px)));
+        padding-left: max(12px, calc(6px + env(safe-area-inset-left, 0px)));
+        padding-right: max(12px, calc(6px + env(safe-area-inset-right, 0px)));
     }
+
     .dpad-container {
         width: 120px;
         height: 120px;
@@ -509,9 +528,12 @@ select.btn-select:hover {
 /* Very narrow phones (<= 380px width) */
 @media (max-width: 380px) {
     #touch-controller {
-        height: 165px;
-        min-height: 165px;
-        padding: 4px 6px;
+        height: auto;
+        min-height: calc(122px + env(safe-area-inset-bottom, 0px));
+        padding-top: 4px;
+        padding-bottom: max(12px, calc(4px + env(safe-area-inset-bottom, 0px)));
+        padding-left: max(8px, calc(4px + env(safe-area-inset-left, 0px)));
+        padding-right: max(8px, calc(4px + env(safe-area-inset-right, 0px)));
     }
     .dpad-container {
         width: 110px;
@@ -567,10 +589,14 @@ select.btn-select:hover {
 /* Landscape phones: the controller bar competes with a very short viewport */
 @media (max-height: 500px) {
     #touch-controller {
-        height: 130px;
-        min-height: 130px;
-        padding: 4px 18px;
+        height: auto;
+        min-height: calc(108px + env(safe-area-inset-bottom, 0px));
+        padding-top: 4px;
+        padding-bottom: max(8px, calc(4px + env(safe-area-inset-bottom, 0px)));
+        padding-left: max(18px, calc(8px + env(safe-area-inset-left, 0px)));
+        padding-right: max(18px, calc(8px + env(safe-area-inset-right, 0px)));
     }
+
     .danger-btn {
         padding: 2px 8px;
         font-size: 0.58rem;
