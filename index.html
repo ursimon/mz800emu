@@ -5,7 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="MZ-800">
+    <meta name="theme-color" content="#1a1c23">
+    <meta name="description" content="Sharp MZ-800 8-bit computer emulator powered by WebAssembly">
     <title>Sharp MZ-800 Emulator (WebAssembly)</title>
+    <link rel="manifest" href="manifest.webmanifest">
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <link rel="alternate icon" type="image/png" href="favicon.png">
     <link rel="apple-touch-icon" href="apple-touch-icon.png">
@@ -34,10 +39,24 @@
                 <button id="btn-mute" class="btn">Sound: ON</button>
                 <button id="btn-aspect" class="btn" title="Toggle Aspect Ratio (4:3 CRT / 4:3 Zoom / 1:1 Pixel / Stretch)">📺 4:3 CRT</button>
                 <button id="btn-crt" class="btn active" title="Toggle Scanline Filter">CRT</button>
+                <button id="btn-check-update" class="btn" title="Check for Application Updates">🔄 Check Update</button>
+                <button id="btn-pwa-install" class="btn" style="display:none;" title="Install Sharp MZ-800 as App">📲 Install App</button>
             </div>
 
             <button id="btn-more" class="btn toolbar-more-btn" title="More options" aria-label="More options" aria-expanded="false">⚙️</button>
         </header>
+
+        <!-- PWA Update Notification Banner -->
+        <div id="update-banner" class="update-banner hidden" role="alert">
+            <div class="update-banner-content">
+                <span class="update-banner-icon">🚀</span>
+                <span class="update-banner-text">Update available for Sharp MZ-800!</span>
+            </div>
+            <div class="update-banner-actions">
+                <button id="btn-update-now" class="btn btn-update">Update Now</button>
+                <button id="btn-update-dismiss" class="btn btn-dismiss" aria-label="Dismiss">✕</button>
+            </div>
+        </div>
 
         <!-- CRT Display Screen -->
         <main id="screen-viewport">
@@ -96,5 +115,7 @@
     <script src="mz800.js"></script>
     <script src="controls.js"></script>
     <script src="emulator.js"></script>
+    <script src="pwa.js"></script>
 </body>
 </html>
+
