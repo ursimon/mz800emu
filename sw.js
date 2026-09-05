@@ -10,7 +10,7 @@
  * 4. Controlled Skip-Waiting: listens for UI 'SKIP_WAITING' messages to reload cleanly.
  */
 
-const CACHE_VERSION = 'mz800-pwa-v1.0.0';
+const CACHE_VERSION = 'mz800-pwa-v1.0.1';
 const CACHE_NAME = CACHE_VERSION;
 
 const PRECACHE_ASSETS = [
@@ -34,9 +34,10 @@ const PRECACHE_ASSETS = [
     './games/unicard_mgr.mzf'
 ];
 
-// 1. Install: Pre-cache core runtime assets
+// 1. Install: Pre-cache core runtime assets and immediately skip waiting to prevent limbo
 self.addEventListener('install', (event) => {
     console.log('[ServiceWorker] Installing version:', CACHE_NAME);
+    self.skipWaiting();
     event.waitUntil(
         caches.open(CACHE_NAME).then((cache) => {
             console.log('[ServiceWorker] Pre-caching core offline assets...');
@@ -44,6 +45,7 @@ self.addEventListener('install', (event) => {
         })
     );
 });
+
 
 // 2. Activate: Purge any older cache versions and claim clients
 self.addEventListener('activate', (event) => {

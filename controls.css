@@ -794,41 +794,34 @@ body.hide-controls #touch-controller {
 
 /* PWA Update Banner & Install Button */
 .update-banner {
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
+    width: 100%;
     background: linear-gradient(90deg, #1c202a 0%, #252b3a 100%);
     border-bottom: 2px solid var(--accent-red);
-    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.6);
-    padding: 8px 16px;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+    padding: 6px 12px;
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
-    gap: 12px;
-    z-index: 100;
-    transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.3s ease;
-    transform: translateY(0);
-    opacity: 1;
+    gap: 8px;
+    z-index: 50;
 }
 
 .update-banner.hidden {
-    transform: translateY(-100%);
-    opacity: 0;
-    pointer-events: none;
+    display: none !important;
 }
 
 .update-banner-content {
     display: flex;
     align-items: center;
-    gap: 8px;
-    font-size: 0.85rem;
-    font-weight: 500;
+    gap: 6px;
+    font-size: 0.82rem;
+    font-weight: 600;
     color: var(--text-primary);
 }
 
 .update-banner-icon {
-    font-size: 1.1rem;
+    font-size: 1rem;
     animation: pwa-pulse 1.5s infinite;
 }
 
@@ -848,7 +841,10 @@ body.hide-controls #touch-controller {
     border-color: #ff4820 !important;
     color: #fff !important;
     font-weight: 700 !important;
-    padding: 5px 12px !important;
+    padding: 4px 10px !important;
+    font-size: 0.78rem !important;
+    cursor: pointer;
+    touch-action: manipulation;
 }
 
 .btn-update:hover {
@@ -859,9 +855,10 @@ body.hide-controls #touch-controller {
     background: transparent !important;
     border: none !important;
     color: var(--text-muted) !important;
-    font-size: 1rem !important;
-    padding: 4px 8px !important;
+    font-size: 1.1rem !important;
+    padding: 2px 6px !important;
     cursor: pointer;
+    touch-action: manipulation;
 }
 
 .btn-dismiss:hover {
@@ -877,4 +874,5 @@ body.hide-controls #touch-controller {
 #btn-pwa-install:hover {
     background: linear-gradient(135deg, #25476a, #1d5b90);
 }
+
 
