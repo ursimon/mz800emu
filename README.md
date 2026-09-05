@@ -53,6 +53,27 @@ python3 -m http.server -d web 8080
 
 ---
 
+### Deploying to GitHub Pages
+
+The live web player is hosted on GitHub Pages from the `gh-pages` branch at:
+🎮 **[https://ursimon.github.io/mz800emu/](https://ursimon.github.io/mz800emu/)**
+
+Whenever changes are made to the WebAssembly core or the web frontend on `web-port`, deploy the updated `web/` assets directly to `gh-pages` using:
+
+```bash
+# 1. Rebuild WebAssembly binary and JS glue
+./build_wasm.sh
+
+# 2. Deploy web/ tree directly to the gh-pages branch
+COMMIT_ID=$(git commit-tree $(git rev-parse HEAD:web) -m "feat(pages): update web player build")
+git branch -f gh-pages $COMMIT_ID
+git push origin gh-pages
+```
+
+GitHub Pages will automatically pick up the new commit on `gh-pages` and update the live site within seconds.
+
+---
+
 # Original mz800emu Project
 
 [![Build](https://github.com/michalhucik/mz800emu/actions/workflows/build.yml/badge.svg)](https://github.com/michalhucik/mz800emu/actions/workflows/build.yml)
