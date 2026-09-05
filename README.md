@@ -19,8 +19,16 @@ This repository branch (`web-port`) contains a high-performance WebAssembly comp
 - **Synchronous Web Audio:** Resampled audio streaming through Web Audio API with zero audio drift or pops.
 - **Controls & Input:** Full physical keyboard mapping, virtual retro on-screen keyboard, and mobile touch D-Pad & action buttons.
 - **Speed & Turbo:** 1x authentic PAL (~50Hz), Fast (3x), and multi-frame MAX Turbo fast-forward.
-- **Media Loading:** Drag & drop support for `.mzf`, `.mzt`, `.dsk`, and tape/disk images.
+- **Media Loading:** Drag & drop and URL loading for `.mzf`, `.m12`, `.mzt`, `.dsk`, and `.zip` archives.
 - **Zero-Leak Runtime:** Cooperative non-blocking frame loop designed for 60Hz browser `requestAnimationFrame`.
+
+#### Supported Formats & Web Port Differences
+See the dedicated guide for a full technical breakdown:
+📖 **[Supported Formats & Web Port Feature Comparison](docs/web_port_features_and_formats.md)**
+
+- **Loaded in Web Player:** `.mzf`, `.m12`, `.mzt` (cassette programs), `.dsk` (floppy disks), and `.zip` (auto-extracted).
+- **Desktop Only Formats:** `.wav`/`.wave` (raw tape audio/record), `.tap` (ZX Spectrum tape), `.mzq` (Quick Disk), `.img`/`.dat` (IDE8 hard disk), `.mzs` (snapshots).
+- **Omitted in Web Port:** Integrated Z80 debugger, Dear ImGui multi-window UI, multi-threading (`GThread`), MCP server, Sharp MZ-700/MZ-1500 modes, physical tape deck controls, and host disk write-back.
 
 #### GPLv3 Compliance & Upstream Attribution
 This port is distributed under the **GNU General Public License v3.0 (GPLv3)** in compliance with the original software license.
