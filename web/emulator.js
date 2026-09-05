@@ -1062,6 +1062,24 @@
             });
         }
 
+        // Mobile toolbar: collapse Speed/Mute/Aspect/CRT/URL behind a "More" dropdown
+        const btnMore = document.getElementById('btn-more');
+        const toolbarSecondary = document.getElementById('toolbar-secondary');
+        if (btnMore && toolbarSecondary) {
+            btnMore.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const isOpen = toolbarSecondary.classList.toggle('open');
+                btnMore.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+            });
+            document.addEventListener('click', (e) => {
+                if (toolbarSecondary.classList.contains('open') &&
+                    !toolbarSecondary.contains(e.target) && e.target !== btnMore) {
+                    toolbarSecondary.classList.remove('open');
+                    btnMore.setAttribute('aria-expanded', 'false');
+                }
+            });
+        }
+
         const fileInput = document.getElementById('file-input');
         if (fileInput) {
             fileInput.addEventListener('change', (e) => {

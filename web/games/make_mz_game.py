@@ -169,8 +169,8 @@ def build_game_mzf(output_path):
     # 2. Input Polling via 8255 PPI
     # Read Column 7 (Arrows)
     emit(0x3E, 0x07)       # LD A, 7 (Column 7)
-    emit(0xD3, 0x00)       # OUT (0x00), A  -- Port A (0xE000)
-    emit(0xDB, 0x01)       # IN A, (0x01)   -- Port B (0xE001)
+    emit(0xD3, 0xD0)       # OUT (0xD0), A  -- Port A (PIO 8255, MZ-800 IORQ 0xD0)
+    emit(0xDB, 0xD1)       # IN A, (0xD1)   -- Port B (PIO 8255, MZ-800 IORQ 0xD1)
 
     # Test UP (bit 5)
     emit(0xE6, 0x20)       # AND 0x20
@@ -181,7 +181,7 @@ def build_game_mzf(output_path):
     JP("INPUT_DONE")
 
     L("CHECK_DOWN")
-    emit(0xDB, 0x01)       # IN A, (0x01)
+    emit(0xDB, 0xD1)       # IN A, (0xD1)
     emit(0xE6, 0x10)       # AND 0x10 (Down = bit 4)
     JR('NZ', "CHECK_LEFT")
     # DOWN Pressed: DX = 0, DY = 1
@@ -190,7 +190,7 @@ def build_game_mzf(output_path):
     JP("INPUT_DONE")
 
     L("CHECK_LEFT")
-    emit(0xDB, 0x01)       # IN A, (0x01)
+    emit(0xDB, 0xD1)       # IN A, (0xD1)
     emit(0xE6, 0x04)       # AND 0x04 (Left = bit 2)
     JR('NZ', "CHECK_RIGHT")
     # LEFT Pressed: DX = -1, DY = 0
@@ -199,7 +199,7 @@ def build_game_mzf(output_path):
     JP("INPUT_DONE")
 
     L("CHECK_RIGHT")
-    emit(0xDB, 0x01)       # IN A, (0x01)
+    emit(0xDB, 0xD1)       # IN A, (0xD1)
     emit(0xE6, 0x08)       # AND 0x08 (Right = bit 3)
     JR('NZ', "CHECK_SPACE")
     # RIGHT Pressed: DX = 1, DY = 0
@@ -210,8 +210,8 @@ def build_game_mzf(output_path):
     L("CHECK_SPACE")
     # Read Column 6 (Space)
     emit(0x3E, 0x06)       # LD A, 6
-    emit(0xD3, 0x00)       # OUT (0x00), A
-    emit(0xDB, 0x01)       # IN A, (0x01)
+    emit(0xD3, 0xD0)       # OUT (0xD0), A  -- Port A
+    emit(0xDB, 0xD1)       # IN A, (0xD1)  -- Port B
     emit(0xE6, 0x10)       # AND 0x10 (Space = bit 4)
     JR('NZ', "NO_BOOST")
     emit(0x3E, 1); emit(0x32, 0x07, 0x11) # Boost = 1
@@ -408,12 +408,12 @@ def build_game_mzf(output_path):
     emit(0x06, 0x30)       # LD B, 48 pulses
     L("BEEP_H_LOOP")
     emit(0x3E, 0x01)       # Toggle bit 0 of Port C
-    emit(0xD3, 0x02)       # OUT (0x02), A
+    emit(0xD3, 0xD2)       # OUT (0xD2), A
     emit(0x0E, 0x40)       # Delay
     L("BEEP_H_D1")
     emit(0x0D); JR('NZ', "BEEP_H_D1")
     emit(0x3E, 0x00)
-    emit(0xD3, 0x02)
+    emit(0xD3, 0xD2)
     emit(0x0E, 0x40)
     L("BEEP_H_D2")
     emit(0x0D); JR('NZ', "BEEP_H_D2")
@@ -425,12 +425,12 @@ def build_game_mzf(output_path):
     emit(0x06, 0x20)       # LD B, 32 pulses
     L("BEEP_L_LOOP")
     emit(0x3E, 0x01)
-    emit(0xD3, 0x02)
+    emit(0xD3, 0xD2)
     emit(0x0E, 0xC0)       # Longer delay
     L("BEEP_L_D1")
     emit(0x0D); JR('NZ', "BEEP_L_D1")
     emit(0x3E, 0x00)
-    emit(0xD3, 0x02)
+    emit(0xD3, 0xD2)
     emit(0x0E, 0xC0)
     L("BEEP_L_D2")
     emit(0x0D); JR('NZ', "BEEP_L_D2")

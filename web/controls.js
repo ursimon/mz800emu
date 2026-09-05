@@ -260,10 +260,8 @@
             // Action Buttons
             // Button A -> SPACE (Fire 1)
             this.bindTouchButton('btn-act-a', 6, 4);
-            // Button B -> ARROW UP or ENTER (Fire 2 / Jump)
+            // Button B -> ARROW UP (Fire 2 / Jump)
             this.bindTouchButton('btn-act-b', 7, 5);
-            // Button C -> SHIFT
-            this.bindTouchButton('btn-act-c', 8, 0);
 
             // System Buttons
             // Space
