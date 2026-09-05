@@ -3,10 +3,10 @@
  *
  * Handles Service Worker registration with zero-stale caching policy:
  * - updateViaCache: 'none' bypasses HTTP cache on SW updates
- * - Immediate update detection via registration.onupdatefound
+ * - Auto-activation: self.skipWaiting() on install keeps workers fresh
+ * - Guaranteed update reload: clicking 'Update Now' triggers skip-waiting and reloads
  * - Foreground checks on visibilitychange, online, and interval
- * - Interactive Update Banner with SKIP_WAITING signal
- * - Emergency hard cache reset function (window.mz800ClearCacheAndReload)
+ * - Manual 'Check Update' and emergency 'Clear Cache & Reload' buttons
  * - PWA beforeinstallprompt handler
  */
 
@@ -15,6 +15,7 @@
 
     let swRegistration = null;
     let deferredInstallPrompt = null;
+    let isReloading = false;
 
     function initPWA() {
         setupInstallPrompt();
@@ -27,19 +28,29 @@
         window.addEventListener('load', async () => {
             try {
                 // Register service worker with updateViaCache: 'none'
-                // This guarantees the browser checks the server directly for sw.js changes.
                 const registration = await navigator.serviceWorker.register('./sw.js', {
                     updateViaCache: 'none'
                 });
                 swRegistration = registration;
                 console.log('[PWA] ServiceWorker registered with scope:', registration.scope);
 
-                // Check if an updated worker is already waiting to activate
+                // Listen for controller changes: when a new SW activates, reload automatically
+                navigator.serviceWorker.addEventListener('controllerchange', () => {
+                    if (!isReloading) {
+                        isReloading = true;
+                        console.log('[PWA] Controller changed. Reloading page...');
+                        window.location.reload();
+                    }
+                });
+
+                // If a waiting worker already exists (e.g. from previous visit), check if dismissed
                 if (registration.waiting) {
-                    showUpdateBanner(registration.waiting);
+                    if (sessionStorage.getItem('mz800_update_dismissed') !== '1') {
+                        showUpdateBanner(registration.waiting);
+                    }
                 }
 
-                // Listen for updates found during registration/lifecycle checks
+                // Listen for new updates installed in the background
                 registration.addEventListener('updatefound', () => {
                     const newWorker = registration.installing;
                     if (!newWorker) return;
@@ -47,8 +58,8 @@
                     newWorker.addEventListener('statechange', () => {
                         if (newWorker.state === 'installed') {
                             if (navigator.serviceWorker.controller) {
-                                // A new version is installed in the background and waiting!
-                                console.log('[PWA] New version ready in background.');
+                                // A new version is ready in the background
+                                console.log('[PWA] New version installed and waiting.');
                                 showUpdateBanner(newWorker);
                             } else {
                                 console.log('[PWA] App shell cached for offline use.');
@@ -57,26 +68,16 @@
                     });
                 });
 
-                // Listen for controller changes (when new SW claims the page)
-                let isReloading = false;
-                navigator.serviceWorker.addEventListener('controllerchange', () => {
-                    if (!isReloading) {
-                        isReloading = true;
-                        console.log('[PWA] New controller active. Reloading page...');
-                        window.location.reload();
-                    }
-                });
-
-                // Proactively check for updates when returning to the app
+                // Proactively check for updates on return to tab/app
                 document.addEventListener('visibilitychange', () => {
                     if (document.visibilityState === 'visible' && navigator.onLine) {
                         checkForUpdates(false);
                     }
                 });
 
-                // Check when connection restored
+                // Check on reconnect
                 window.addEventListener('online', () => {
-                    console.log('[PWA] Connection restored, checking for updates...');
+                    console.log('[PWA] Reconnected to internet, checking for updates...');
                     checkForUpdates(false);
                 });
 
@@ -87,8 +88,8 @@
                     }
                 }, 30 * 60 * 1000);
 
-                // Setup manual toolbar update check
-                setupManualUpdateCheck();
+                // Setup manual toolbar update check & clear cache buttons
+                setupManualControls();
 
             } catch (err) {
                 console.error('[PWA] ServiceWorker registration error:', err);
@@ -103,12 +104,8 @@
         if (!swRegistration) return;
         try {
             await swRegistration.update();
-            if (manual) {
-                setTimeout(() => {
-                    if (swRegistration.waiting) {
-                        showUpdateBanner(swRegistration.waiting);
-                    }
-                }, 800);
+            if (manual && swRegistration.waiting) {
+                showUpdateBanner(swRegistration.waiting);
             }
         } catch (e) {
             console.warn('[PWA] Update check failed:', e);
@@ -127,68 +124,110 @@
 
         banner.classList.remove('hidden');
 
-        if (btnUpdate) {
-            btnUpdate.onclick = () => {
+        const triggerUpdate = (e) => {
+            if (e) e.preventDefault();
+            if (btnUpdate) {
                 btnUpdate.textContent = 'Updating...';
                 btnUpdate.disabled = true;
+            }
 
-                if (worker) {
-                    worker.postMessage({ type: 'SKIP_WAITING' });
-                } else if (swRegistration && swRegistration.waiting) {
+            sessionStorage.removeItem('mz800_update_dismissed');
+
+            // Send SKIP_WAITING to all available targets
+            try {
+                if (worker) worker.postMessage({ type: 'SKIP_WAITING' });
+                if (swRegistration && swRegistration.waiting) {
                     swRegistration.waiting.postMessage({ type: 'SKIP_WAITING' });
-                } else {
+                }
+                if (swRegistration && swRegistration.installing) {
+                    swRegistration.installing.postMessage({ type: 'SKIP_WAITING' });
+                }
+            } catch (err) {
+                console.warn('[PWA] postMessage error:', err);
+            }
+
+            // Guaranteed reload fallback after 300ms
+            setTimeout(() => {
+                if (!isReloading) {
+                    isReloading = true;
                     window.location.reload();
                 }
-            };
+            }, 300);
+        };
+
+        if (btnUpdate) {
+            btnUpdate.onclick = triggerUpdate;
         }
 
         if (btnDismiss) {
-            btnDismiss.onclick = () => {
+            btnDismiss.onclick = (e) => {
+                e.preventDefault();
                 banner.classList.add('hidden');
+                sessionStorage.setItem('mz800_update_dismissed', '1');
             };
         }
     }
 
     /**
-     * Configures the "Check for Updates" button in toolbar / settings.
+     * Configures the "Check for Updates" and "Clear Cache" buttons in toolbar.
      */
-    function setupManualUpdateCheck() {
+    function setupManualControls() {
         const btnCheck = document.getElementById('btn-check-update');
-        if (!btnCheck) return;
+        const btnForce = document.getElementById('btn-force-reload');
 
-        btnCheck.addEventListener('click', async () => {
-            const originalText = btnCheck.textContent;
-            btnCheck.textContent = '⏳ Checking...';
-            btnCheck.disabled = true;
+        if (btnCheck) {
+            btnCheck.addEventListener('click', async () => {
+                const originalText = btnCheck.textContent;
+                btnCheck.textContent = '⏳ Checking...';
+                btnCheck.disabled = true;
 
-            try {
-                await swRegistration.update();
-
-                setTimeout(() => {
-                    if (swRegistration.waiting) {
-                        btnCheck.textContent = '⚡ Update Found!';
-                        showUpdateBanner(swRegistration.waiting);
-                        setTimeout(() => {
-                            btnCheck.textContent = originalText;
-                            btnCheck.disabled = false;
-                        }, 2000);
-                    } else {
+                try {
+                    if (!swRegistration) {
                         btnCheck.textContent = '✅ Up to Date!';
                         setTimeout(() => {
                             btnCheck.textContent = originalText;
                             btnCheck.disabled = false;
                         }, 2000);
+                        return;
                     }
-                }, 1000);
-            } catch (err) {
-                console.warn('[PWA] Manual check error:', err);
-                btnCheck.textContent = '⚠️ Error / Offline';
-                setTimeout(() => {
-                    btnCheck.textContent = originalText;
-                    btnCheck.disabled = false;
-                }, 2000);
-            }
-        });
+
+                    await swRegistration.update();
+
+                    setTimeout(() => {
+                        if (swRegistration.waiting) {
+                            btnCheck.textContent = '⚡ Update Found!';
+                            sessionStorage.removeItem('mz800_update_dismissed');
+                            showUpdateBanner(swRegistration.waiting);
+                            setTimeout(() => {
+                                btnCheck.textContent = originalText;
+                                btnCheck.disabled = false;
+                            }, 2000);
+                        } else {
+                            btnCheck.textContent = '✅ Up to Date!';
+                            setTimeout(() => {
+                                btnCheck.textContent = originalText;
+                                btnCheck.disabled = false;
+                            }, 2000);
+                        }
+                    }, 600);
+                } catch (err) {
+                    console.warn('[PWA] Manual check error:', err);
+                    btnCheck.textContent = '⚠️ Offline / Error';
+                    setTimeout(() => {
+                        btnCheck.textContent = originalText;
+                        btnCheck.disabled = false;
+                    }, 2000);
+                }
+            });
+        }
+
+        if (btnForce) {
+            btnForce.addEventListener('click', async () => {
+                btnForce.textContent = '🧹 Purging...';
+                btnForce.disabled = true;
+                await window.mz800ClearCacheAndReload();
+            });
+        }
     }
 
     /**
@@ -223,16 +262,20 @@
 
     /**
      * Emergency hard cache wipe and reload helper.
-     * Accessible from devtools or UI failsafe.
      */
     window.mz800ClearCacheAndReload = async function() {
-        if ('serviceWorker' in navigator) {
-            const regs = await navigator.serviceWorker.getRegistrations();
-            for (const r of regs) await r.unregister();
-        }
-        if ('caches' in window) {
-            const keys = await caches.keys();
-            for (const k of keys) await caches.delete(k);
+        sessionStorage.removeItem('mz800_update_dismissed');
+        try {
+            if ('serviceWorker' in navigator) {
+                const regs = await navigator.serviceWorker.getRegistrations();
+                for (const r of regs) await r.unregister();
+            }
+            if ('caches' in window) {
+                const keys = await caches.keys();
+                for (const k of keys) await caches.delete(k);
+            }
+        } catch (e) {
+            console.warn('[PWA] Cache purge error:', e);
         }
         window.location.reload(true);
     };
