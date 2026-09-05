@@ -311,7 +311,10 @@
             // Hook global API
             window.MZ800 = {
                 sendKey: (col, bit, pressed) => this.sendKey(col, bit, pressed),
-                loadMZF: (data) => this.loadMZF(data),
+                loadMZF: (data, name) => this.loadMZF(data, name),
+                loadDSK: (data, name) => this.loadDSK(data, name),
+                loadData: (name, data) => this.loadData(name, data),
+                loadFromUrl: (url, proxy) => this.loadFromUrl(url, proxy),
                 reset: () => this.reset(),
                 toggleSpeed: () => this.toggleSpeed(),
                 toggleMute: () => this.toggleMute(),
@@ -515,7 +518,7 @@
             }
         }
 
-        async loadMZF(arrayBuffer) {
+        async loadMZF(arrayBuffer, fileName) {
             if (!this.module || !this.module._mz_wasm_load_mzf) {
                 console.error('[MZ800] Module not ready for MZF load');
                 return;
@@ -530,10 +533,11 @@
             const status = this.module._mz_wasm_load_mzf(bufPtr, size);
             this.module._free(bufPtr);
 
+            const dispName = fileName ? fileName.split('/').pop().split('\\').pop() : 'MZF';
             if (status === 0) {
-                console.log('[MZ800] MZF successfully injected and booted!');
+                console.log(`[MZ800] ${dispName} successfully injected and booted!`);
                 if (this.tapeStatus) {
-                    this.tapeStatus.textContent = 'MZF Booted';
+                    this.tapeStatus.textContent = `${dispName} Booted`;
                     this.tapeStatus.style.color = '#54ff54';
                 }
             } else {
@@ -550,20 +554,213 @@
             }
         }
 
-        async loadMZFUrl(url) {
-            try {
-                if (this.tapeStatus) this.tapeStatus.textContent = 'Loading...';
-                const resp = await fetch(url);
-                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-                const data = await resp.arrayBuffer();
-                await this.loadMZF(data);
-            } catch (err) {
-                console.error('[MZ800] Failed to load MZF from URL:', url, err);
+        async loadDSK(arrayBuffer, fileName) {
+            if (!this.module || !this.module._mz_wasm_load_dsk) {
+                console.error('[MZ800] Module not ready for DSK load');
+                return;
+            }
+
+            const uint8 = new Uint8Array(arrayBuffer);
+            const size = uint8.length;
+            const bufPtr = this.module._malloc(size);
+            this.module.HEAPU8.set(uint8, bufPtr);
+
+            console.log(`[MZ800] Mounting DSK image (${size} bytes)...`);
+            const status = this.module._mz_wasm_load_dsk(bufPtr, size);
+            this.module._free(bufPtr);
+
+            const dispName = fileName ? fileName.split('/').pop().split('\\').pop() : 'DSK';
+            if (status === 0) {
+                console.log(`[MZ800] ${dispName} mounted and system rebooted!`);
                 if (this.tapeStatus) {
-                    this.tapeStatus.textContent = 'Fetch Failed';
+                    this.tapeStatus.textContent = `${dispName} Booted`;
+                    this.tapeStatus.style.color = '#54ff54';
+                }
+            } else {
+                console.error('[MZ800] DSK mount failed with code:', status);
+                if (this.tapeStatus) {
+                    this.tapeStatus.textContent = 'DSK Error';
                     this.tapeStatus.style.color = '#ff4444';
                 }
             }
+
+            if (this.audioCtx && this.audioCtx.state === 'suspended') {
+                this.audioCtx.resume();
+            }
+        }
+
+        async extractFromZip(arrayBuffer) {
+            const u8 = new Uint8Array(arrayBuffer);
+            const view = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+            // Local file header signature: 0x04034b50
+            if (u8.length < 30 || view.getUint32(0, true) !== 0x04034b50) {
+                return null;
+            }
+
+            let offset = 0;
+            while (offset + 30 <= u8.length) {
+                const sig = view.getUint32(offset, true);
+                if (sig !== 0x04034b50) break;
+
+                const method = view.getUint16(offset + 8, true);
+                const compSize = view.getUint32(offset + 18, true);
+                const uncompSize = view.getUint32(offset + 22, true);
+                const fnameLen = view.getUint16(offset + 26, true);
+                const extraLen = view.getUint16(offset + 28, true);
+
+                if (offset + 30 + fnameLen > u8.length) break;
+
+                const nameBytes = u8.subarray(offset + 30, offset + 30 + fnameLen);
+                const fileName = new TextDecoder().decode(nameBytes);
+                const dataOffset = offset + 30 + fnameLen + extraLen;
+
+                if (dataOffset + compSize > u8.length) break;
+
+                // Skip directories and macOS metadata
+                if (!fileName.endsWith('/') && !/^__MACOSX|\/\./.test(fileName)) {
+                    if (/\.(mzf|m12|mzt|dsk)$/i.test(fileName)) {
+                        const rawData = u8.subarray(dataOffset, dataOffset + compSize);
+                        let decompressed = null;
+
+                        if (method === 0) {
+                            // Stored (no compression)
+                            decompressed = rawData.slice().buffer;
+                        } else if (method === 8) {
+                            // Deflate
+                            if (typeof DecompressionStream !== 'undefined') {
+                                try {
+                                    const ds = new DecompressionStream('deflate-raw');
+                                    const writer = ds.writable.getWriter();
+                                    writer.write(rawData);
+                                    writer.close();
+                                    decompressed = await new Response(ds.readable).arrayBuffer();
+                                } catch (e) {
+                                    console.warn('[MZ800] ZIP deflate decompression failed:', e);
+                                }
+                            } else {
+                                console.warn('[MZ800] DecompressionStream not supported in this environment for ZIP deflate');
+                            }
+                        }
+
+                        if (decompressed) {
+                            console.log(`[MZ800] Extracted ${fileName} (${decompressed.byteLength} bytes) from ZIP.`);
+                            return { fileName, data: decompressed };
+                        }
+                    }
+                }
+
+                offset = dataOffset + compSize;
+            }
+
+            return null;
+        }
+
+        async loadData(fileName, arrayBuffer) {
+            // First check if it is a ZIP archive
+            const zipContent = await this.extractFromZip(arrayBuffer);
+            if (zipContent) {
+                return await this.loadData(zipContent.fileName, zipContent.data);
+            }
+
+            const name = (fileName || '').toLowerCase();
+            const uint8 = new Uint8Array(arrayBuffer);
+
+            // If extension is DSK or floppy disk size (>= 160KB and multiple of 256/512)
+            if (name.endsWith('.dsk') || (uint8.length >= 160 * 1024 && (uint8.length % 256 === 0) && !name.endsWith('.mzf') && !name.endsWith('.m12'))) {
+                return await this.loadDSK(arrayBuffer, fileName);
+            }
+
+            // Otherwise load as MZF / tape
+            return await this.loadMZF(arrayBuffer, fileName);
+        }
+
+        async fetchBinaryWithFallback(url, customProxy) {
+            const tryFetch = async (fetchUrl) => {
+                const resp = await fetch(fetchUrl, { mode: 'cors' });
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                return await resp.arrayBuffer();
+            };
+
+            const isAbsolute = /^https?:\/\//i.test(url);
+
+            // 1. Relative or local URL
+            if (!isAbsolute) {
+                return await tryFetch(url);
+            }
+
+            // 2. Custom proxy if provided
+            if (customProxy) {
+                const proxyUrl = customProxy.includes('%s')
+                    ? customProxy.replace('%s', encodeURIComponent(url))
+                    : `${customProxy}${encodeURIComponent(url)}`;
+                console.log(`[MZ800] Fetching via custom proxy: ${proxyUrl}`);
+                return await tryFetch(proxyUrl);
+            }
+
+            // 3. Try direct fetch first
+            try {
+                return await tryFetch(url);
+            } catch (directErr) {
+                console.warn('[MZ800] Direct fetch failed (likely CORS). Trying fallback CORS proxies...', directErr);
+            }
+
+            // 4. Try public CORS proxy 1: corsproxy.io
+            try {
+                this.updateStatus('CORS Proxy 1...');
+                return await tryFetch(`https://corsproxy.io/?${encodeURIComponent(url)}`);
+            } catch (p1Err) {
+                console.warn('[MZ800] corsproxy.io failed, trying allorigins...', p1Err);
+            }
+
+            // 5. Try public CORS proxy 2: api.allorigins.win
+            try {
+                this.updateStatus('CORS Proxy 2...');
+                return await tryFetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`);
+            } catch (p2Err) {
+                console.error('[MZ800] All fetch attempts failed:', p2Err);
+                throw new Error('Failed to fetch file directly or via CORS proxies.');
+            }
+        }
+
+        async loadFromUrl(url, customProxy) {
+            if (!url) return;
+
+            // Extract readable filename from URL
+            let fileName = 'file';
+            try {
+                const parsed = new URL(url, window.location.href);
+                const fullStr = parsed.pathname + parsed.search;
+                const match = fullStr.match(/([a-zA-Z0-9_\-.]+\.(?:mzf|m12|mzt|dsk|zip))/i);
+                if (match) {
+                    fileName = match[1];
+                } else {
+                    const segs = parsed.pathname.split('/').filter(Boolean);
+                    if (segs.length > 0) fileName = segs[segs.length - 1];
+                }
+            } catch (e) {
+                const match = url.match(/([a-zA-Z0-9_\-.]+\.(?:mzf|m12|mzt|dsk|zip))/i);
+                if (match) fileName = match[1];
+            }
+
+            console.log(`[MZ800] Loading from URL: ${url} (name: ${fileName})`);
+            this.updateStatus(`Loading ${fileName}...`);
+            if (this.tapeStatus) this.tapeStatus.style.color = '#24ccff';
+
+            try {
+                const arrayBuffer = await this.fetchBinaryWithFallback(url, customProxy);
+                await this.loadData(fileName, arrayBuffer);
+            } catch (err) {
+                console.error('[MZ800] Failed to load from URL:', url, err);
+                if (this.tapeStatus) {
+                    this.tapeStatus.textContent = 'Fetch Failed';
+                    this.tapeStatus.style.color = '#ff4444';
+                    this.tapeStatus.title = `Error: ${err.message}. If blocked by CORS, try downloading and using 📂 File.`;
+                }
+            }
+        }
+
+        async loadMZFUrl(url) {
+            return this.loadFromUrl(url);
         }
 
         setupFileDrop() {
@@ -586,7 +783,7 @@
                 if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
                     const file = e.dataTransfer.files[0];
                     const reader = new FileReader();
-                    reader.onload = () => this.loadMZF(reader.result);
+                    reader.onload = () => this.loadData(file.name, reader.result);
                     reader.readAsArrayBuffer(file);
                 }
             });
@@ -597,6 +794,75 @@
                 this.tapeStatus.textContent = text;
             }
         }
+    }
+
+    /**
+     * Parses URL query parameters and hash to extract file to load and emulator options.
+     * Handles unencoded query strings in target URL (e.g. ?catalog/...&op=get).
+     */
+    function parseInitialUrl() {
+        const search = window.location.search || '';
+        const hash = window.location.hash || '';
+
+        const raw = (search.length > 1) ? search.substring(1) : (hash.length > 1 ? hash.substring(1) : '');
+        if (!raw) return null;
+
+        const emuFlags = ['speed', 'aspect', 'mute', 'muted', 'sound', 'crt', 'gamepad', 'proxy', 'cors', 'turbo'];
+        const options = {};
+
+        // Parse emulator flags if present
+        const flagMatches = raw.matchAll(/[?&](speed|aspect|mute|muted|sound|crt|gamepad|proxy|cors)=([^&#]+)/gi);
+        for (const m of flagMatches) {
+            options[m[1].toLowerCase()] = decodeURIComponent(m[2]);
+        }
+
+        // 1. Direct URL check (if raw starts with http://, https://, games/, ./, or /)
+        if (/^(?:https?:\/\/|games\/|\.\/|\/)/i.test(raw)) {
+            // Check if there are emulator flags appended
+            const parts = raw.split('&');
+            let urlParts = [parts[0]];
+            for (let i = 1; i < parts.length; i++) {
+                const key = parts[i].split('=')[0].toLowerCase();
+                if (emuFlags.includes(key)) break;
+                urlParts.push(parts[i]);
+            }
+            let target = urlParts.join('&');
+            try { target = decodeURIComponent(target); } catch (e) {}
+            options.url = target;
+            return options;
+        }
+
+        // 2. Recognized loader keys: url, mzf, file, tape, dsk, load
+        const match = raw.match(/(?:^|[&?])(url|mzf|file|tape|dsk|load)=([^#]+)/i);
+        if (match) {
+            options.type = match[1].toLowerCase();
+            const remainder = match[2];
+
+            // Retain any query parameters that belong to the remote target URL (e.g. &op=get)
+            // Stop only when encountering known emulator control flags
+            const parts = remainder.split('&');
+            let urlParts = [parts[0]];
+            for (let i = 1; i < parts.length; i++) {
+                const key = parts[i].split('=')[0].toLowerCase();
+                if (emuFlags.includes(key)) {
+                    break;
+                } else {
+                    urlParts.push(parts[i]);
+                }
+            }
+
+            let targetUrl = urlParts.join('&');
+            try {
+                targetUrl = decodeURIComponent(targetUrl);
+            } catch (e) {}
+            options.url = targetUrl;
+        }
+
+        if (options.cors && !options.proxy) {
+            options.proxy = options.cors;
+        }
+
+        return Object.keys(options).length > 0 ? options : null;
     }
 
     // Startup bootstrap when DOM is ready
@@ -653,9 +919,20 @@
         if (fileInput) {
             fileInput.addEventListener('change', (e) => {
                 if (e.target.files && e.target.files.length > 0) {
+                    const file = e.target.files[0];
                     const reader = new FileReader();
-                    reader.onload = () => emulator.loadMZF(reader.result);
-                    reader.readAsArrayBuffer(e.target.files[0]);
+                    reader.onload = () => emulator.loadData(file.name, reader.result);
+                    reader.readAsArrayBuffer(file);
+                }
+            });
+        }
+
+        const btnLoadUrl = document.getElementById('btn-load-url');
+        if (btnLoadUrl) {
+            btnLoadUrl.addEventListener('click', () => {
+                const url = window.prompt('Enter URL to MZF, DSK, or ZIP file:');
+                if (url && url.trim()) {
+                    emulator.loadFromUrl(url.trim());
                 }
             });
         }
@@ -666,13 +943,37 @@
             btnLoadGame.addEventListener('click', () => {
                 const selected = gameSelect.value;
                 if (selected) {
-                    emulator.loadMZFUrl(selected);
+                    emulator.loadFromUrl(selected);
                 }
             });
         }
 
         // Initialize emulator instance
         await emulator.init();
+
+        // Check for URL parameters
+        const initial = parseInitialUrl();
+        if (initial) {
+            console.log('[MZ800] Found initial URL parameters:', initial);
+
+            if (initial.aspect && emulator.aspectModes.includes(initial.aspect)) {
+                emulator.setAspectMode(initial.aspect);
+            }
+            if (initial.speed === 'max' || initial.speed === 'turbo' || initial.turbo === '1') {
+                if (!emulator.maxSpeed) emulator.toggleSpeed();
+            }
+            if (initial.mute === '1' || initial.muted === '1' || initial.sound === '0') {
+                if (!emulator.isMuted) emulator.toggleMute();
+            }
+            if (initial.crt === '0' || initial.crt === 'off') {
+                if (crtContainer) crtContainer.classList.remove('crt-scanlines');
+                if (btnCrt) btnCrt.classList.remove('active');
+            }
+
+            if (initial.url) {
+                await emulator.loadFromUrl(initial.url, initial.proxy);
+            }
+        }
     });
 
 })(window);

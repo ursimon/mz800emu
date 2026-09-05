@@ -26,8 +26,9 @@
                     <option value="games/unicard_mgr.mzf">Unicard Manager (MZ-800)</option>
                 </select>
                 <button id="btn-load-game" class="btn">▶ Run</button>
-                <input type="file" id="file-input" accept=".mzf,.m12,.dsk" style="display:none">
-                <button class="btn" onclick="document.getElementById('file-input').click()">📂 Tape (.mzf)</button>
+                <input type="file" id="file-input" accept=".mzf,.m12,.mzt,.dsk,.zip" style="display:none">
+                <button class="btn" onclick="document.getElementById('file-input').click()" title="Open local MZF / DSK / ZIP file">📂 File</button>
+                <button id="btn-load-url" class="btn" title="Load MZF / DSK / ZIP from URL">🔗 URL</button>
             </div>
 
             <!-- Emulator Actions -->
