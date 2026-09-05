@@ -68,20 +68,18 @@
 
         <!-- Responsive Touch / Virtual Controller -->
         <footer id="touch-controller">
-            <!-- Left Zone: D-Pad + BREAK (kept far apart) -->
-            <div class="left-zone">
-                <div class="dpad-container">
-                    <button id="btn-up" class="dpad-btn dpad-up" aria-label="Up">▲</button>
-                    <button id="btn-left" class="dpad-btn dpad-left" aria-label="Left">◀</button>
-                    <div class="dpad-center"></div>
-                    <button id="btn-right" class="dpad-btn dpad-right" aria-label="Right">▶</button>
-                    <button id="btn-down" class="dpad-btn dpad-down" aria-label="Down">▼</button>
-                </div>
-                <button id="btn-sys-break" class="danger-btn" aria-label="Break">BREAK</button>
+            <!-- Left: D-Pad ONLY (clean thumb zone, zero accidental key presses) -->
+            <div class="dpad-container">
+                <button id="btn-up" class="dpad-btn dpad-up" aria-label="Up">▲</button>
+                <button id="btn-left" class="dpad-btn dpad-left" aria-label="Left">◀</button>
+                <div class="dpad-center"></div>
+                <button id="btn-right" class="dpad-btn dpad-right" aria-label="Right">▶</button>
+                <button id="btn-down" class="dpad-btn dpad-down" aria-label="Down">▼</button>
             </div>
 
-            <!-- Center Keys -->
+            <!-- Center: System & Auxiliary Keys (isolated in center between thumbs) -->
             <div class="center-keys">
+                <button id="btn-sys-break" class="danger-btn" aria-label="Break" title="Break / Escape (isolated)">BREAK</button>
                 <button id="btn-sys-cr" class="sys-btn" aria-label="Return / CR">CR / ENTER</button>
                 <button id="btn-sys-space" class="sys-btn sys-btn-wide" aria-label="Spacebar">SPACE</button>
             </div>
