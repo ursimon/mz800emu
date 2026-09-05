@@ -2,15 +2,23 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-ROOT_DIR="$(cd "$REPO_DIR/.." && pwd)"
-EMSDK_DIR="$ROOT_DIR/emsdk"
+ROOT_DIR="$SCRIPT_DIR"
+
+if [ -d "$ROOT_DIR/src" ]; then
+    REPO_DIR="$ROOT_DIR"
+else
+    REPO_DIR="$ROOT_DIR/repo"
+fi
+
+EMSDK_DIR="${EMSDK_DIR:-$ROOT_DIR/emsdk}"
+if [ ! -d "$EMSDK_DIR" ] && [ -d "$ROOT_DIR/../emsdk" ]; then
+    EMSDK_DIR="$ROOT_DIR/../emsdk"
+fi
 
 if [ -f "$EMSDK_DIR/emsdk_env.sh" ]; then
     source "$EMSDK_DIR/emsdk_env.sh" > /dev/null 2>&1
 fi
-
-WEB_DIR="$ROOT_DIR/web"
+WEB_DIR="$REPO_DIR/web"
 mkdir -p "$WEB_DIR"
 
 SOURCES=(
@@ -163,11 +171,12 @@ emcc -O3 -flto \
     -I"$REPO_DIR/src/emulator/mzarch/mz800" \
     -include "$REPO_DIR/src/wasm/glib_shim.h" \
     -DMZARCH=800 -DMZARCH_NAME=\"mz800\" -DMZTVSYS_PAL=50 -DMZTVSYS_NTSC=60 -DMZTVSYS=MZTVSYS_PAL -DMZTVSYS_NAME=\"PAL\" \
-    -DMZ800EMU_NO_DEBUGGER -DMZ800EMU_NO_MCP -DMZ800EMU_NO_MCP_TCP -DMZ_NO_VERSION_CHECK -DUSE_COMPUTED_GOTO=0 -DMZTEST_HEADLESS -DUSE_SDL3_AUDIO \
+    -DMZ800EMU_NO_DEBUGGER -DMZ800EMU_NO_MCP -DMZ800EMU_NO_MCP_TCP -DMZ_NO_VERSION_CHECK -DUSE_COMPUTED_GOTO=1 -DMZTEST_HEADLESS -DUSE_SDL3_AUDIO \
     -sEXPORTED_FUNCTIONS="['_mz_wasm_init','_mz_wasm_reset','_mz_wasm_run_frame','_mz_wasm_get_framebuffer','_mz_wasm_get_screen_width','_mz_wasm_get_screen_height','_mz_wasm_get_audio_samples','_mz_wasm_key_event','_mz_wasm_load_mzf','_mz_wasm_load_dsk','_mz_wasm_load_file','_malloc','_free']" \
     -sEXPORTED_RUNTIME_METHODS="['ccall','cwrap','getValue','setValue','HEAPU8','HEAPU32','HEAPF32']" \
     -sALLOW_MEMORY_GROWTH=1 \
     -sINITIAL_MEMORY=33554432 \
+    -sSTACK_SIZE=2097152 \
     "${SOURCES[@]}" \
     -o "$WEB_DIR/mz800.js"
 

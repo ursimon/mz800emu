@@ -1,4 +1,59 @@
-# mz800emu
+# mz800emu — WebAssembly & Web Port
+
+[![Play Online](https://img.shields.io/badge/Play%20Online-Live%20Demo-brightgreen?style=for-the-badge&logo=googlechrome&logoColor=white)](https://ursimon.github.io/mz800emu/)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+[![Upstream](https://img.shields.io/badge/Upstream-michalhucik%2Fmz800emu-orange)](https://github.com/michalhucik/mz800emu)
+
+> **Interactive WebAssembly port of the [Sharp MZ-800/700/1500 emulator](https://github.com/michalhucik/mz800emu) by Michal Hučík.**
+>
+> 🕹️ **[Click here to play in your browser](https://ursimon.github.io/mz800emu/)**
+
+---
+
+### About this WebAssembly Port
+
+This repository branch (`web-port`) contains a high-performance WebAssembly compilation and browser-based player for **mz800emu**, enabling faithful, cycle-accurate Sharp MZ emulation directly in any modern desktop or mobile browser without plugins or installation.
+
+#### Web Features
+- **Zero-Install Web Player:** Pure client-side execution via WebAssembly and HTML5 Canvas with CRT integer scaling.
+- **Synchronous Web Audio:** Resampled audio streaming through Web Audio API with zero audio drift or pops.
+- **Controls & Input:** Full physical keyboard mapping, virtual retro on-screen keyboard, and mobile touch D-Pad & action buttons.
+- **Speed & Turbo:** 1x authentic PAL (~50Hz), Fast (3x), and multi-frame MAX Turbo fast-forward.
+- **Media Loading:** Drag & drop support for `.mzf`, `.mzt`, `.dsk`, and tape/disk images.
+- **Zero-Leak Runtime:** Cooperative non-blocking frame loop designed for 60Hz browser `requestAnimationFrame`.
+
+#### GPLv3 Compliance & Upstream Attribution
+This port is distributed under the **GNU General Public License v3.0 (GPLv3)** in compliance with the original software license.
+- **Original Author & Upstream Project:** [Michal Hučík](https://github.com/michalhucik) — [https://github.com/michalhucik/mz800emu](https://github.com/michalhucik/mz800emu)
+- **Port Author:** [Michal Ursiny](https://github.com/ursimon)
+- **Modifications (GPLv3 Section 5 Notice):**
+  - Added WebAssembly C runtime bridge (`src/wasm/mz_wasm_api.c`, `mz_wasm_api.h`).
+  - Added GLib shim header (`src/wasm/glib_shim.h`) to decouple the core emulator from heavy POSIX desktop dependencies.
+  - Implemented cooperative, non-blocking single-threaded frame execution (`mz_wasm_run_frame`) replacing desktop blocking audio/video loops.
+  - Added HTML5 / Web Audio frontend, touch controls, and Emscripten build toolchain (`build_wasm.sh`, `web/`).
+
+---
+
+### Building the WebAssembly Port
+
+Prerequisites: [Emscripten SDK (emsdk)](https://emscripten.org/docs/getting_started/downloads.html).
+
+```bash
+# Compile C core to web/mz800.js and web/mz800.wasm
+./build_wasm.sh
+
+# Run headless verification test suite
+node test_node.js
+node test_speed.js
+node test_memory_audit.js
+
+# Serve the web player locally
+python3 -m http.server -d web 8080
+```
+
+---
+
+# Original mz800emu Project
 
 [![Build](https://github.com/michalhucik/mz800emu/actions/workflows/build.yml/badge.svg)](https://github.com/michalhucik/mz800emu/actions/workflows/build.yml)
 

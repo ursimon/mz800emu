@@ -30,6 +30,7 @@
 #include "libs/sdlapp/sdlapp_options.h"
 #include "libs/sdlapp/sdlapp_paths.h"
 #include "libs/mzf/mzf.h"
+#include "hw-generic/fdc/fdc.h"
 
 /* Forward declaration for video stub installer in wasm_stubs.c */
 extern void wasm_install_video_stubs(void);
@@ -237,4 +238,70 @@ int mz_wasm_load_mzf(const uint8_t *data, size_t size)
 
     mzarch_bootstrap_run_mzf(path);
     return 0;
+}
+
+int mz_wasm_load_dsk(const uint8_t *data, size_t size)
+{
+    if (!s_wasm_initialized) {
+        mz_wasm_init();
+    }
+    if (!data || size == 0) {
+        return -1;
+    }
+
+    const char *path = "/drive0.dsk";
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        return -2;
+    }
+    size_t written = fwrite(data, 1, size, f);
+    fclose(f);
+
+    if (written != size) {
+        return -3;
+    }
+
+    fdc_mount_dskfile(&g_fdc[FDC0], 0, (char *)path);
+    mz_wasm_reset();
+    printf("[MZ800] DSK mounted into Drive 0 (%zu bytes). Machine reset.\n", size);
+    return 0;
+}
+
+int mz_wasm_load_file(const char *filename, const uint8_t *data, size_t size)
+{
+    if (!data || size == 0) {
+        return -1;
+    }
+
+    /* Check if filename specifies DSK */
+    if (filename) {
+        size_t len = strlen(filename);
+        if (len >= 4 && strcasecmp(filename + len - 4, ".dsk") == 0) {
+            return mz_wasm_load_dsk(data, size);
+        }
+        if (len >= 4 && (strcasecmp(filename + len - 4, ".mzf") == 0 ||
+                         strcasecmp(filename + len - 4, ".m12") == 0 ||
+                         strcasecmp(filename + len - 4, ".mzt") == 0)) {
+            return mz_wasm_load_mzf(data, size);
+        }
+    }
+
+    /* Content auto-detection:
+     * MZF has 128-byte header:
+     * - byte 0: ftype (0x01 machine, 0x02 basic, 0x05 data)
+     */
+    if (size >= sizeof(st_MZF_HEADER)) {
+        uint8_t ftype = data[0];
+        if (ftype == 0x01 || ftype == 0x02 || ftype == 0x05) {
+            return mz_wasm_load_mzf(data, size);
+        }
+    }
+
+    /* Typical floppy sizes: multiples of 256/512 sectors, >= 160KB */
+    if (size >= 160 * 1024) {
+        return mz_wasm_load_dsk(data, size);
+    }
+
+    /* Default fallback: attempt MZF */
+    return mz_wasm_load_mzf(data, size);
 }

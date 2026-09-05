@@ -70,6 +70,23 @@ void mz_wasm_key_event(int col, int bit, bool pressed);
  */
 int mz_wasm_load_mzf(const uint8_t *data, size_t size);
 
+/**
+ * @brief Mount a DSK floppy image into FDC0 Drive 0 and reset machine.
+ * @param data Raw DSK image buffer.
+ * @param size Size in bytes.
+ * @return 0 on success, non-zero on error.
+ */
+int mz_wasm_load_dsk(const uint8_t *data, size_t size);
+
+/**
+ * @brief Auto-detect format (MZF or DSK) by filename or data inspection and boot.
+ * @param filename Optional filename or NULL.
+ * @param data Raw binary buffer.
+ * @param size Size in bytes.
+ * @return 0 on success, non-zero on error.
+ */
+int mz_wasm_load_file(const char *filename, const uint8_t *data, size_t size);
+
 #ifdef __cplusplus
 }
 #endif
