@@ -675,17 +675,48 @@
         }
 
         async fetchBinaryWithFallback(url, customProxy) {
-            const tryFetch = async (fetchUrl) => {
-                const resp = await fetch(fetchUrl, { mode: 'cors' });
-                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-                return await resp.arrayBuffer();
-            };
-
+            const logs = [];
             const isAbsolute = /^https?:\/\//i.test(url);
+
+            const tryFetch = async (fetchUrl, desc, timeoutMs = 7000) => {
+                logs.push(`[${new Date().toLocaleTimeString()}] ${desc}: ${fetchUrl}`);
+                const controller = new AbortController();
+                const timer = setTimeout(() => controller.abort(), timeoutMs);
+                try {
+                    const resp = await fetch(fetchUrl, { mode: 'cors', signal: controller.signal });
+                    clearTimeout(timer);
+                    logs.push(`  ↳ Response status: HTTP ${resp.status} (${resp.statusText || 'OK'})`);
+                    if (!resp.ok) {
+                        throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
+                    }
+                    const data = await resp.arrayBuffer();
+                    logs.push(`  ↳ Received ${data.byteLength} bytes.`);
+
+                    // Check if content is actually an HTML error page or JSON error text
+                    if (data.byteLength > 0 && data.byteLength < 5000) {
+                        const preview = new TextDecoder().decode(new Uint8Array(data).subarray(0, 200));
+                        if (/^\s*<!DOCTYPE\s+html|^\s*<html|^\s*\{\s*"error"|^\s*\{\s*"corsfix_error"/i.test(preview)) {
+                            logs.push(`  ❌ Response payload is HTML/JSON error text, not MZ binary.`);
+                            throw new Error(`Proxy returned HTML/JSON error: ${preview.substring(0, 80).replace(/\s+/g, ' ')}`);
+                        }
+                    }
+                    return data;
+                } catch (err) {
+                    clearTimeout(timer);
+                    const msg = (err.name === 'AbortError') ? 'Request timed out after ' + (timeoutMs / 1000) + 's' : err.message;
+                    logs.push(`  ❌ Failed: ${msg}`);
+                    throw err;
+                }
+            };
 
             // 1. Relative or local URL
             if (!isAbsolute) {
-                return await tryFetch(url);
+                try {
+                    const data = await tryFetch(url, 'Local Fetch');
+                    return { data, logs };
+                } catch (e) {
+                    throw { error: e, logs };
+                }
             }
 
             // 2. Custom proxy if provided
@@ -693,32 +724,136 @@
                 const proxyUrl = customProxy.includes('%s')
                     ? customProxy.replace('%s', encodeURIComponent(url))
                     : `${customProxy}${encodeURIComponent(url)}`;
-                console.log(`[MZ800] Fetching via custom proxy: ${proxyUrl}`);
-                return await tryFetch(proxyUrl);
+                try {
+                    const data = await tryFetch(proxyUrl, 'Custom Proxy Fetch');
+                    return { data, logs };
+                } catch (e) {
+                    throw { error: e, logs };
+                }
             }
 
-            // 3. Try direct fetch first
-            try {
-                return await tryFetch(url);
-            } catch (directErr) {
-                console.warn('[MZ800] Direct fetch failed (likely CORS). Trying fallback CORS proxies...', directErr);
+            // Target candidate URLs: original URL and direct resolved URL if applicable
+            const targetUrls = [url];
+            if (url.includes('sharpmz.zdechov.net/?catalog/files/')) {
+                const direct = url.replace('?catalog/files/', 'files/catalog/').replace(/&op=get.*$/, '');
+                targetUrls.push(direct);
             }
 
-            // 4. Try public CORS proxy 1: corsproxy.io
-            try {
-                this.updateStatus('CORS Proxy 1...');
-                return await tryFetch(`https://corsproxy.io/?${encodeURIComponent(url)}`);
-            } catch (p1Err) {
-                console.warn('[MZ800] corsproxy.io failed, trying allorigins...', p1Err);
+            // 3. Try direct fetch on candidate URLs
+            for (const target of targetUrls) {
+                try {
+                    const data = await tryFetch(target, 'Direct Browser Fetch');
+                    return { data, logs };
+                } catch (e) {
+                    logs.push(`  ℹ️ Direct fetch blocked by browser Same-Origin Policy (CORS).`);
+                }
             }
 
-            // 5. Try public CORS proxy 2: api.allorigins.win
-            try {
-                this.updateStatus('CORS Proxy 2...');
-                return await tryFetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`);
-            } catch (p2Err) {
-                console.error('[MZ800] All fetch attempts failed:', p2Err);
-                throw new Error('Failed to fetch file directly or via CORS proxies.');
+            // 4. Try public CORS proxies with candidate URLs
+            const proxies = [
+                { name: 'corsproxy.io', makeUrl: (u) => `https://corsproxy.io/?url=${encodeURIComponent(u)}` },
+                { name: 'api.allorigins.win', makeUrl: (u) => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}` },
+                { name: 'codetabs.com', makeUrl: (u) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}` }
+            ];
+
+            for (const proxy of proxies) {
+                for (const target of targetUrls) {
+                    try {
+                        this.updateStatus(`${proxy.name}...`);
+                        const data = await tryFetch(proxy.makeUrl(target), `Fallback Proxy (${proxy.name})`, 5000);
+                        return { data, logs };
+                    } catch (e) {
+                        // continue to next proxy
+                    }
+                }
+            }
+
+            logs.push(`\n❌ All fetch attempts failed. Cross-origin access to '${url}' is blocked.`);
+            throw { error: new Error('Cross-Origin download blocked and public proxies unavailable.'), logs };
+        }
+
+        showDebugModal(targetUrl, fileName, logs) {
+            const existing = document.getElementById('debug-modal-overlay');
+            if (existing) existing.remove();
+
+            const downloadUrl = targetUrl.startsWith('http') ? targetUrl : window.location.href;
+
+            const overlay = document.createElement('div');
+            overlay.id = 'debug-modal-overlay';
+            overlay.className = 'modal-overlay';
+            overlay.innerHTML = `
+                <div class="modal-card">
+                    <div class="modal-header">
+                        <div class="modal-title">
+                            <span>⚠️</span>
+                            <span>Cross-Origin Download Blocked (CORS)</span>
+                        </div>
+                        <button class="modal-close" id="modal-close-btn" aria-label="Close">&times;</button>
+                    </div>
+                    <div class="modal-body">
+                        <p>
+                            The browser prevented downloading <strong>${fileName}</strong> from <code>${targetUrl}</code> due to browser security restrictions <strong>(CORS: Cross-Origin Resource Sharing)</strong>.
+                        </p>
+                        <p style="color: var(--text-muted); font-size: 12.5px;">
+                            The remote server does not provide an <code>Access-Control-Allow-Origin: *</code> header, and public fallback proxies were unavailable or blocked.
+                        </p>
+
+                        <div class="modal-actions">
+                            <a href="${downloadUrl}" target="_blank" rel="noopener noreferrer" class="modal-btn modal-btn-primary">
+                                ⬇️ Download ${fileName} in New Tab
+                            </a>
+                            <button id="modal-open-file-btn" class="modal-btn">
+                                📂 Open Local File
+                            </button>
+                        </div>
+
+                        <p style="font-size: 12.5px; margin-top: 4px;">
+                            <strong>Quick Workarounds:</strong><br>
+                            1. Click <strong>Download in New Tab</strong> above to save the file to your computer.<br>
+                            2. Drag & drop the downloaded file onto the emulator screen (or click <strong>Open Local File</strong>).<br>
+                            3. Or use a free browser extension (e.g. <em>Allow CORS</em>) during local testing.<br>
+                            4. Or specify a custom proxy using <code>&proxy=&lt;proxy_url&gt;</code> in the URL.
+                        </p>
+
+                        <details style="margin-top: 6px;" open>
+                            <summary style="cursor: pointer; color: var(--accent-blue); font-size: 12.5px; font-weight: 500;">
+                                🔍 Technical Debug Log (${logs.length} events)
+                            </summary>
+                            <div class="modal-log-box" id="modal-log-box" style="margin-top: 8px;">${logs.map(l => l.replace(/</g, '&lt;').replace(/>/g, '&gt;')).join('\n')}</div>
+                            <button id="modal-copy-log-btn" class="modal-btn" style="margin-top: 8px; font-size: 11.5px;">
+                                📋 Copy Log to Clipboard
+                            </button>
+                        </details>
+                    </div>
+                </div>
+            `;
+
+            document.body.appendChild(overlay);
+
+            const closeBtn = document.getElementById('modal-close-btn');
+            if (closeBtn) closeBtn.addEventListener('click', () => overlay.remove());
+
+            overlay.addEventListener('click', (e) => {
+                if (e.target === overlay) overlay.remove();
+            });
+
+            const openFileBtn = document.getElementById('modal-open-file-btn');
+            if (openFileBtn) {
+                openFileBtn.addEventListener('click', () => {
+                    overlay.remove();
+                    const fileInput = document.getElementById('file-input');
+                    if (fileInput) fileInput.click();
+                });
+            }
+
+            const copyBtn = document.getElementById('modal-copy-log-btn');
+            if (copyBtn) {
+                copyBtn.addEventListener('click', () => {
+                    navigator.clipboard.writeText(logs.join('\n')).then(() => {
+                        copyBtn.textContent = '✓ Copied!';
+                        setTimeout(() => copyBtn.textContent = '📋 Copy Log to Clipboard', 2000);
+                    });
+                });
             }
         }
 
@@ -747,15 +882,27 @@
             if (this.tapeStatus) this.tapeStatus.style.color = '#24ccff';
 
             try {
-                const arrayBuffer = await this.fetchBinaryWithFallback(url, customProxy);
-                await this.loadData(fileName, arrayBuffer);
-            } catch (err) {
-                console.error('[MZ800] Failed to load from URL:', url, err);
+                const { data, logs } = await this.fetchBinaryWithFallback(url, customProxy);
+                this.debugLogs = logs;
+                await this.loadData(fileName, data);
+            } catch (errInfo) {
+                const err = errInfo.error || errInfo;
+                const logs = errInfo.logs || [err.message];
+                this.debugLogs = logs;
+
+                console.error('[MZ800] Failed to load from URL:', url);
+                console.warn(logs.join('\n'));
+
                 if (this.tapeStatus) {
-                    this.tapeStatus.textContent = 'Fetch Failed';
+                    this.tapeStatus.textContent = 'Fetch Failed (Click for Details)';
                     this.tapeStatus.style.color = '#ff4444';
-                    this.tapeStatus.title = `Error: ${err.message}. If blocked by CORS, try downloading and using 📂 File.`;
+                    this.tapeStatus.style.cursor = 'pointer';
+                    this.tapeStatus.title = 'Click to open Cross-Origin Debug & Download helper';
+                    this.tapeStatus.onclick = () => this.showDebugModal(url, fileName, logs);
                 }
+
+                // Automatically display the helpful debug & download modal
+                this.showDebugModal(url, fileName, logs);
             }
         }
 

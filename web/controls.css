@@ -465,3 +465,124 @@ select.btn-select:hover {
 body.hide-controls #touch-controller {
     display: none !important;
 }
+
+/* Debug & Error Modal */
+.modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background: rgba(0, 0, 0, 0.8);
+    backdrop-filter: blur(4px);
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+}
+
+.modal-card {
+    background: var(--panel-bg);
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    max-width: 650px;
+    width: 100%;
+    max-height: 90vh;
+    overflow-y: auto;
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.7);
+    display: flex;
+    flex-direction: column;
+    color: var(--text-primary);
+    font-size: 13.5px;
+}
+
+.modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--panel-border);
+    background: #232730;
+}
+
+.modal-title {
+    font-weight: 600;
+    font-size: 15px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: #ff9944;
+}
+
+.modal-close {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: 22px;
+    cursor: pointer;
+    line-height: 1;
+}
+
+.modal-close:hover {
+    color: #fff;
+}
+
+.modal-body {
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    line-height: 1.5;
+}
+
+.modal-log-box {
+    background: #0d0e11;
+    border: 1px solid var(--panel-border);
+    border-radius: 4px;
+    padding: 10px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 11.5px;
+    max-height: 160px;
+    overflow-y: auto;
+    color: #a0a6b5;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+.modal-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.modal-btn {
+    padding: 8px 14px;
+    border-radius: 4px;
+    border: 1px solid var(--panel-border);
+    background: var(--btn-bg);
+    color: var(--text-primary);
+    cursor: pointer;
+    font-size: 13px;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.modal-btn:hover {
+    background: var(--btn-hover);
+}
+
+.modal-btn-primary {
+    background: var(--accent-red);
+    border-color: #e04410;
+    color: #fff;
+    font-weight: 500;
+}
+
+.modal-btn-primary:hover {
+    background: #e04410;
+}
+
