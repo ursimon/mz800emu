@@ -365,10 +365,12 @@ HOT int z80_execute_step(z80_t *cpu, int target_cycles);
 
 /* ========== Computed goto podpora ========== */
 
+#ifndef USE_COMPUTED_GOTO
 #if defined(__GNUC__) || defined(__clang__)
 #define USE_COMPUTED_GOTO 1
 #else
 #define USE_COMPUTED_GOTO 0
+#endif
 #endif
 
 /* ========== Hlavni emulacni smycka ========== */

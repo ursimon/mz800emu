@@ -68,6 +68,14 @@ extern "C" {
 #endif
 #endif
 
+#ifndef CFGMAIN_PLATFORM
+#if defined(__EMSCRIPTEN__)
+#define CFGMAIN_PLATFORM "WebAssembly"
+#else
+#define CFGMAIN_PLATFORM "Unknown"
+#endif
+#endif
+
     extern struct st_CFGROOT *g_cfgmain;
     extern bool g_cfgmain_ini_file_exists;
 

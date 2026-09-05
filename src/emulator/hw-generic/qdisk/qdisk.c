@@ -27,7 +27,7 @@
 #define COMPILE_FOR_EMULATOR
 #undef COMPILE_FOR_UNICARD
 #undef FS_LAYER_FATFS
-#elif LINUX
+#elif defined(LINUX) || defined(__EMSCRIPTEN__) || defined(__APPLE__) || defined(__unix__)
 #define COMPILE_FOR_EMULATOR
 #undef COMPILE_FOR_UNICARD
 #undef FS_LAYER_FATFS
@@ -718,7 +718,7 @@ void qdisk_open ( void ) {
              * Pro uc1 nebo když fallback není aplikovatelný vrací
              * unicard_build_fallback_mzq 0 a padá se na klasickou
              * file mount cestu (kde existující chyba zůstává). */
-            uint8_t fallback_buff[ 92 + 0x10000 ];
+            static uint8_t fallback_buff[ 92 + 0x10000 ];
             uint32_t fallback_size = 0;
             if ( !g_file_test ( filepath, G_FILE_TEST_IS_REGULAR ) ) {
                 fallback_size = unicard_build_fallback_mzq ( fallback_buff,

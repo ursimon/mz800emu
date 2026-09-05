@@ -32,7 +32,7 @@
 #define COMPILE_FOR_EMULATOR
 #undef COMPILE_FOR_UNICARD
 #undef FS_LAYER_FATFS
-#elif LINUX
+#elif defined(LINUX) || defined(__EMSCRIPTEN__) || defined(__APPLE__) || defined(__unix__)
 #define COMPILE_FOR_EMULATOR
 #undef COMPILE_FOR_UNICARD
 #undef FS_LAYER_FATFS

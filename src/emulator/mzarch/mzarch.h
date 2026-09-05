@@ -99,6 +99,8 @@ extern "C"
 
     extern void mzarch_main_init(void);
     extern void mzarch_main(void);
+    extern void mzarch_main_reset(void);
+    extern void mzarch_run_one_frame(void);
     extern void mzarch_main_insideop_iorq(void);
     extern void mzarch_main_insideop_mreq(void);
     extern void mzarch_main_insideop_mreq_e00x(void);

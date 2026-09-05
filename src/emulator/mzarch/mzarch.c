@@ -84,7 +84,7 @@ st_mzarch_main g_mzarch_main;
 /* Forward declaration - mzarch_main_reset je definovaná níže (ř. 654),
  * ale mzzarch_main_do_emulator_paused() ji volá při zpracování reset
  * requestu z paused stavu. */
-static void mzarch_main_reset(void);
+void mzarch_main_reset(void);
 
 static inline void mzarch_main_event_callback_20ms(unsigned event_ticks)
 {
@@ -954,7 +954,7 @@ void mzarch_forced_full_screen_refresh(void)
  *
  *******************************************************************************/
 
-static void mzarch_main_reset(void)
+void mzarch_main_reset(void)
 {
     printf("\nMZ800 Reset!\n");
     if (EMULATOR_TEST_PAUSED)
@@ -1260,6 +1260,46 @@ void mzarch_main(void)
             {
                 mzzarch_main_do_emulator_paused();
             };
+        };
+    }
+}
+
+void mzarch_run_one_frame(void)
+{
+    // Neprisel reset?
+    APP_MUTEX_LOCK(g_mzarch_main.reset_request_mutex);
+    if (g_mzarch_main.reset_request)
+    {
+        g_mzarch_main.reset_request = false;
+        APP_MUTEX_UNLOCK(g_mzarch_main.reset_request_mutex);
+        mzarch_main_reset();
+    }
+    else
+    {
+        APP_MUTEX_UNLOCK(g_mzarch_main.reset_request_mutex);
+    };
+
+    uint32_t target_screen = g_gdg.total_elapsed.screens + 1;
+
+    while (g_gdg.total_elapsed.screens < target_screen && !g_emulator.paused)
+    {
+        g_mzarch_main.instruction_addr = g_mzarch_main.cpu->pc;
+        g_mzarch_main.instruction_tstates = z80_step(g_mzarch_main.cpu);
+
+#ifdef MZ800EMU_CFG_CLK1M1_SLOW
+        mzarch_sync_ctc0_and_cmt(((g_mz800_main.instruction_tstates * GDGCLK2CPU_DIVIDER) - g_mz800_main.instruction_insideop_sync_ticks));
+#else
+        g_gdg.total_elapsed.ticks += ((g_mzarch_main.instruction_tstates * GDGCLK2CPU_DIVIDER) - g_mzarch_main.instruction_insideop_sync_ticks);
+#endif
+
+        g_mzarch_main.instruction_tstates = 0;
+        g_mzarch_main.instruction_insideop_sync_ticks = 0;
+        g_mzarch_main.instruction_wait_tstates = 0;
+
+        if (g_gdg.total_elapsed.ticks >= g_mzarch_main.event.ticks)
+        {
+            mzarch_main_process_events();
+            mzarch_main_process_interrupt();
         };
     }
 }
