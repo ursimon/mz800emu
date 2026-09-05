@@ -632,18 +632,17 @@ select.btn-select:hover {
     .brand .logo-svg {
         height: 18px;
     }
-    select.btn-select {
-        max-width: 130px;
-        font-size: 0.74rem;
-        padding: 4px 6px;
-    }
     #toolbar .btn {
         padding: 4px 6px;
         font-size: 0.74rem;
         gap: 2px;
+        white-space: nowrap;
     }
     .toolbar-group {
         gap: 4px;
+    }
+    .toolbar-primary {
+        flex-wrap: nowrap;
     }
     .toolbar-more-btn {
         display: inline-flex;
