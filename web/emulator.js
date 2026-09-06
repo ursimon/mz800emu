@@ -1093,15 +1093,25 @@
             btnMore.addEventListener('click', (e) => {
                 e.stopPropagation();
                 const isOpen = toolbarSecondary.classList.toggle('open');
+                btnMore.classList.toggle('active', isOpen);
                 btnMore.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
             });
-            document.addEventListener('click', (e) => {
+
+            toolbarSecondary.addEventListener('click', (e) => {
+                e.stopPropagation();
+            });
+
+            const closeMenu = (e) => {
                 if (toolbarSecondary.classList.contains('open') &&
-                    !toolbarSecondary.contains(e.target) && e.target !== btnMore) {
+                    !toolbarSecondary.contains(e.target) &&
+                    !btnMore.contains(e.target)) {
                     toolbarSecondary.classList.remove('open');
+                    btnMore.classList.remove('active');
                     btnMore.setAttribute('aria-expanded', 'false');
                 }
-            });
+            };
+            document.addEventListener('click', closeMenu);
+            document.addEventListener('touchstart', closeMenu, { passive: true });
         }
 
         const fileInput = document.getElementById('file-input');

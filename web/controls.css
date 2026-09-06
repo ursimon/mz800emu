@@ -63,7 +63,7 @@ html, body {
     padding: 6px 12px;
     background-color: var(--panel-bg);
     border-bottom: 1px solid var(--panel-border);
-    z-index: 10;
+    z-index: 30;
     gap: 8px;
     box-sizing: border-box;
     width: 100%;
@@ -662,12 +662,7 @@ select.btn-select:hover {
         gap: 4px;
         position: relative;
         flex-wrap: nowrap;
-        overflow-x: auto;
-        scrollbar-width: none;
-        -ms-overflow-style: none;
-    }
-    #toolbar::-webkit-scrollbar {
-        display: none;
+        overflow: visible;
     }
     .brand {
         flex-shrink: 0;
@@ -695,6 +690,11 @@ select.btn-select:hover {
         display: inline-flex;
         flex-shrink: 0;
     }
+    .toolbar-more-btn.active {
+        background-color: #d03400;
+        border-color: #ff5020;
+        color: #fff;
+    }
     .btn-text-full {
         display: none;
     }
@@ -702,19 +702,30 @@ select.btn-select:hover {
         display: none;
         position: absolute;
         top: 100%;
-        right: 8px;
-        margin-top: 6px;
+        right: 4px;
+        margin-top: 5px;
         flex-direction: column;
         align-items: stretch;
-        background: var(--panel-bg);
+        background: #1c1f26;
         border: 1px solid var(--panel-border);
-        border-radius: 6px;
-        padding: 8px;
-        box-shadow: 0 8px 20px rgba(0, 0, 0, 0.5);
-        z-index: 20;
+        border-radius: 8px;
+        padding: 6px;
+        gap: 5px;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.85);
+        z-index: 100;
+        min-width: 180px;
     }
     .toolbar-secondary.open {
-        display: flex;
+        display: flex !important;
+    }
+    .toolbar-secondary .btn {
+        width: 100%;
+        justify-content: flex-start;
+        padding: 7px 10px;
+        font-size: 0.78rem;
+        box-sizing: border-box;
+        border-radius: 4px;
+        text-align: left;
     }
 }
 
