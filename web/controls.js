@@ -403,6 +403,7 @@
             this.abortTyping = false;
 
             if (this.container) {
+                this.container.style.display = 'none';
                 this.bindKeys();
                 this.setupTypeModal();
             }
@@ -410,7 +411,7 @@
 
         toggle() {
             if (!this.container) return;
-            const willShow = this.container.classList.contains('hidden');
+            const willShow = this.container.classList.contains('hidden') || this.container.style.display === 'none';
             if (willShow) {
                 this.show();
             } else {
@@ -421,12 +422,14 @@
         show() {
             if (!this.container) return;
             this.container.classList.remove('hidden');
+            this.container.style.display = 'flex';
             this.updateVisibility(true);
         }
 
         hide() {
             if (!this.container) return;
             this.container.classList.add('hidden');
+            this.container.style.display = 'none';
             // Release any active modifiers
             if (this.shiftMode > 0) {
                 this.shiftMode = 0;

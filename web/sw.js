@@ -10,7 +10,7 @@
  * 4. Controlled Skip-Waiting: listens for UI 'SKIP_WAITING' messages to reload cleanly.
  */
 
-const CACHE_VERSION = 'mz800-pwa-v1.0.4';
+const CACHE_VERSION = 'mz800-pwa-v1.0.5';
 const CACHE_NAME = CACHE_VERSION;
 
 const PRECACHE_ASSETS = [
@@ -90,21 +90,25 @@ self.addEventListener('fetch', (event) => {
         return;
     }
 
-    // A. Navigation requests (HTML document): Network-First with Cache Fallback
-    // This strictly prevents the app from being stuck on an old index.html when online!
+    // A. Navigation & Code Assets (.html, .js, .css): Network-First with Cache Fallback
+    // Prevents PWA split-brain (new HTML paired with old JS/CSS) while preserving offline capability!
     const isNavigation = request.mode === 'navigate' ||
                          request.destination === 'document' ||
                          url.pathname.endsWith('/') ||
-                         url.pathname.endsWith('/index.html');
+                         url.pathname.endsWith('.html');
 
-    if (isNavigation) {
+    const isCodeAsset = isNavigation ||
+                        url.pathname.endsWith('.js') ||
+                        url.pathname.endsWith('.css');
+
+    if (isCodeAsset) {
         event.respondWith(
-            networkFirstWithTimeout(request, 2500)
+            networkFirstWithTimeout(request, 2000)
         );
         return;
     }
 
-    // B. Static Assets (.wasm, .js, .css, images, fonts): Cache-First with Stale-While-Revalidate
+    // B. Static Binaries & Assets (.wasm, .mzf, images, fonts): Cache-First with Stale-While-Revalidate
     event.respondWith(
         cacheFirstWithRevalidate(request)
     );
@@ -137,14 +141,18 @@ async function networkFirstWithTimeout(request, timeoutMs) {
             return response;
         }
         // Timed out: try cache
-        console.warn('[ServiceWorker] Navigation network fetch timed out, falling back to cache');
-        const cached = await cache.match(request) || await cache.match('./index.html') || await cache.match('./');
+        console.warn('[ServiceWorker] Network fetch timed out, falling back to cache:', request.url);
+        const cached = await cache.match(request) ||
+                       await cache.match(request, { ignoreSearch: true }) ||
+                       ((request.destination === 'document' || request.mode === 'navigate') ? (await cache.match('./index.html') || await cache.match('./')) : null);
         if (cached) return cached;
         // If cache empty, await network
         return await networkPromise;
     } catch (err) {
-        console.log('[ServiceWorker] Navigation fetch failed (offline), falling back to cache:', err);
-        const cached = await cache.match(request) || await cache.match('./index.html') || await cache.match('./');
+        console.log('[ServiceWorker] Network fetch failed (offline), falling back to cache:', request.url, err);
+        const cached = await cache.match(request) ||
+                       await cache.match(request, { ignoreSearch: true }) ||
+                       ((request.destination === 'document' || request.mode === 'navigate') ? (await cache.match('./index.html') || await cache.match('./')) : null);
         if (cached) return cached;
         throw err;
     }
@@ -155,7 +163,7 @@ async function networkFirstWithTimeout(request, timeoutMs) {
  */
 async function cacheFirstWithRevalidate(request) {
     const cache = await caches.open(CACHE_NAME);
-    const cachedResponse = await cache.match(request, { ignoreSearch: true });
+    const cachedResponse = await cache.match(request) || await cache.match(request, { ignoreSearch: true });
 
     if (cachedResponse) {
         // Fetch in background to update cache for next time if online
