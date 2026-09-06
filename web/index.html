@@ -14,7 +14,7 @@
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <link rel="alternate icon" type="image/png" href="favicon.png">
     <link rel="apple-touch-icon" href="apple-touch-icon.png">
-    <link rel="stylesheet" href="controls.css?v=1.0.5">
+    <link rel="stylesheet" href="controls.css?v=1.0.6">
     <style>
         #virtual-keyboard.hidden, #vkbd-type-modal.hidden { display: none !important; }
     </style>
@@ -34,7 +34,7 @@
                 <button id="btn-reset" class="btn">🔄 Reset</button>
                 <button id="btn-gamepad" class="btn" title="Toggle On-screen Touch Gamepad">🎮 Pad</button>
                 <button id="btn-keyboard" class="btn" title="Toggle Sharp MZ-800 Virtual Keyboard">⌨️ Kbd</button>
-                <button id="btn-fullscreen" class="btn" title="Toggle Fullscreen">⛶ Fullscreen</button>
+                <button id="btn-fullscreen" class="btn" title="Toggle Fullscreen">⛶<span class="btn-text-full"> Fullscreen</span></button>
             </div>
 
             <!-- Secondary Emulator Actions (collapses behind ⚙️ on narrow screens) -->
@@ -141,14 +141,14 @@
                     <button class="vk-key vk-fn" data-col="9" data-bit="4"><span class="vk-main">F4</span></button>
                     <button class="vk-key vk-fn" data-col="9" data-bit="3"><span class="vk-main">F5</span></button>
                     <div class="vk-spacer"></div>
-                    <button class="vk-key vk-special" data-col="7" data-bit="7"><span class="vk-sub">CLS</span><span class="vk-main">INST</span></button>
+                    <button class="vk-key vk-special" data-col="7" data-bit="7"><span class="vk-sub">CLS</span><span class="vk-main"><span class="vk-lbl-full">INST</span><span class="vk-lbl-short">INS</span></span></button>
                     <button class="vk-key vk-special" data-col="7" data-bit="6"><span class="vk-sub">HOME</span><span class="vk-main">DEL</span></button>
-                    <button class="vk-key vk-break" data-col="8" data-bit="7"><span class="vk-main">BREAK</span></button>
+                    <button class="vk-key vk-break" data-col="8" data-bit="7"><span class="vk-main"><span class="vk-lbl-full">BREAK</span><span class="vk-lbl-short">BRK</span></span></button>
                 </div>
 
                 <!-- Row 1: Numbers and Graphic Symbols -->
                 <div class="vk-row vk-row-1">
-                    <button class="vk-key vk-special vk-mod-graph" data-col="0" data-bit="6"><span class="vk-main">GRAPH</span></button>
+                    <button class="vk-key vk-special vk-mod-graph" data-col="0" data-bit="6"><span class="vk-main"><span class="vk-lbl-full">GRAPH</span><span class="vk-lbl-short">GRPH</span></span></button>
                     <button class="vk-key" data-col="5" data-bit="7"><span class="vk-sub">!</span><span class="vk-main">1</span></button>
                     <button class="vk-key" data-col="5" data-bit="6"><span class="vk-sub">"</span><span class="vk-main">2</span></button>
                     <button class="vk-key" data-col="5" data-bit="5"><span class="vk-sub">#</span><span class="vk-main">3</span></button>
@@ -185,7 +185,7 @@
 
                 <!-- Row 3: CTRL, A..L, ;, :, ], CR -->
                 <div class="vk-row vk-row-3">
-                    <button class="vk-key vk-special vk-mod-ctrl" data-col="8" data-bit="6"><span class="vk-main">CTRL</span></button>
+                    <button class="vk-key vk-special vk-mod-ctrl" data-col="8" data-bit="6"><span class="vk-main"><span class="vk-lbl-full">CTRL</span><span class="vk-lbl-short">CTRL</span></span></button>
                     <button class="vk-key" data-col="4" data-bit="7"><span class="vk-main">A</span></button>
                     <button class="vk-key" data-col="2" data-bit="5"><span class="vk-main">S</span></button>
                     <button class="vk-key" data-col="4" data-bit="4"><span class="vk-main">D</span></button>
@@ -203,8 +203,8 @@
 
                 <!-- Row 4: SHIFT, ALPHA, Z..M, ,, ., /, ?, SHIFT -->
                 <div class="vk-row vk-row-4">
-                    <button class="vk-key vk-special vk-mod-shift vk-shift-l" data-col="8" data-bit="0"><span class="vk-main">SHIFT</span></button>
-                    <button class="vk-key vk-special vk-mod-alpha" data-col="0" data-bit="4"><span class="vk-main">ALPHA</span></button>
+                    <button class="vk-key vk-special vk-mod-shift vk-shift-l" data-col="8" data-bit="0"><span class="vk-main"><span class="vk-lbl-full">SHIFT</span><span class="vk-lbl-short">SHFT</span></span></button>
+                    <button class="vk-key vk-special vk-mod-alpha" data-col="0" data-bit="4"><span class="vk-main"><span class="vk-lbl-full">ALPHA</span><span class="vk-lbl-short">ALPH</span></span></button>
                     <button class="vk-key" data-col="1" data-bit="6"><span class="vk-main">Z</span></button>
                     <button class="vk-key" data-col="2" data-bit="0"><span class="vk-main">X</span></button>
                     <button class="vk-key" data-col="4" data-bit="5"><span class="vk-main">C</span></button>
@@ -216,7 +216,7 @@
                     <button class="vk-key" data-col="6" data-bit="0"><span class="vk-sub">&gt;</span><span class="vk-main">.</span></button>
                     <button class="vk-key" data-col="7" data-bit="0"><span class="vk-sub">←</span><span class="vk-main">/</span></button>
                     <button class="vk-key" data-col="7" data-bit="1"><span class="vk-sub">→</span><span class="vk-main">?</span></button>
-                    <button class="vk-key vk-special vk-mod-shift vk-shift-r" data-col="8" data-bit="0"><span class="vk-main">SHIFT</span></button>
+                    <button class="vk-key vk-special vk-mod-shift vk-shift-r" data-col="8" data-bit="0"><span class="vk-main"><span class="vk-lbl-full">SHIFT</span><span class="vk-lbl-short">SHFT</span></span></button>
                 </div>
 
                 <!-- Row 5: SPACE and Cursors -->
@@ -266,9 +266,9 @@
 
     <!-- Scripts -->
     <script src="mz800.js"></script>
-    <script src="controls.js?v=1.0.5"></script>
-    <script src="emulator.js?v=1.0.5"></script>
-    <script src="pwa.js?v=1.0.5"></script>
+    <script src="controls.js?v=1.0.6"></script>
+    <script src="emulator.js?v=1.0.6"></script>
+    <script src="pwa.js?v=1.0.6"></script>
 </body>
 </html>
 

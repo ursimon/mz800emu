@@ -57,7 +57,7 @@ html, body {
 /* Toolbar Header */
 #toolbar {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     align-items: center;
     justify-content: space-between;
     padding: 6px 12px;
@@ -65,6 +65,8 @@ html, body {
     border-bottom: 1px solid var(--panel-border);
     z-index: 10;
     gap: 8px;
+    box-sizing: border-box;
+    width: 100%;
 }
 
 .brand {
@@ -74,6 +76,7 @@ html, body {
     font-weight: 700;
     font-size: 0.95rem;
     letter-spacing: 0.5px;
+    flex-shrink: 0;
 }
 
 .brand .logo-badge {
@@ -89,7 +92,11 @@ html, body {
     display: flex;
     align-items: center;
     gap: 6px;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
+}
+
+.btn-text-full {
+    display: inline;
 }
 
 .btn {
@@ -648,30 +655,48 @@ select.btn-select:hover {
     }
 }
 
-/* Compact toolbar on narrow phones: collapse secondary actions behind ⚙️ */
-@media (max-width: 480px) {
+/* Compact toolbar on mobile/tablets: collapse secondary actions behind ⚙️ */
+@media (max-width: 768px) {
     #toolbar {
         padding: 4px 6px;
         gap: 4px;
         position: relative;
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+    }
+    #toolbar::-webkit-scrollbar {
+        display: none;
+    }
+    .brand {
+        flex-shrink: 0;
     }
     .brand .logo-svg {
         height: 18px;
+        max-width: 60px;
     }
     #toolbar .btn {
         padding: 4px 6px;
         font-size: 0.74rem;
         gap: 2px;
         white-space: nowrap;
+        flex-shrink: 0;
     }
     .toolbar-group {
         gap: 4px;
+        flex-wrap: nowrap;
     }
     .toolbar-primary {
         flex-wrap: nowrap;
+        flex-shrink: 1;
     }
     .toolbar-more-btn {
         display: inline-flex;
+        flex-shrink: 0;
+    }
+    .btn-text-full {
+        display: none;
     }
     .toolbar-secondary {
         display: none;
@@ -690,6 +715,24 @@ select.btn-select:hover {
     }
     .toolbar-secondary.open {
         display: flex;
+    }
+}
+
+@media (max-width: 420px) {
+    #toolbar {
+        padding: 3px 4px;
+        gap: 2px;
+    }
+    .brand .logo-svg {
+        height: 16px;
+        max-width: 50px;
+    }
+    #toolbar .btn {
+        padding: 3px 5px;
+        font-size: 0.71rem;
+    }
+    .toolbar-group {
+        gap: 2px;
     }
 }
 
@@ -1053,10 +1096,14 @@ body.hide-controls #touch-controller {
     cursor: pointer;
     touch-action: none;
     box-shadow: 0 2px 3px rgba(0, 0, 0, 0.35);
-    padding: 0;
+    padding: 0 1px;
     transition: transform 0.04s, background 0.05s, border-color 0.05s;
     user-select: none;
     -webkit-user-select: none;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    box-sizing: border-box;
 }
 
 .vk-key:active, .vk-key.pressed {
@@ -1069,6 +1116,12 @@ body.hide-controls #touch-controller {
 .vk-main {
     line-height: 1;
     pointer-events: none;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    max-width: 100%;
+    display: block;
+    text-align: center;
 }
 
 .vk-sub {
@@ -1081,6 +1134,17 @@ body.hide-controls #touch-controller {
     pointer-events: none;
     line-height: 1;
     transition: color 0.15s, transform 0.15s;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    max-width: 85%;
+}
+
+.vk-lbl-short {
+    display: none;
+}
+.vk-lbl-full {
+    display: inline;
 }
 
 /* Special & Modifier Keys (Dark Gray) */
@@ -1139,9 +1203,22 @@ body.hide-controls #touch-controller {
 /* Specific key flex widths */
 .vk-tab { flex: 1.35; }
 .vk-cr { flex: 1.65; color: #24ccff; font-weight: 800; }
-.vk-shift-l { flex: 1.4; }
-.vk-shift-r { flex: 1.8; }
+.vk-mod-graph { flex: 1.35; }
+.vk-mod-ctrl { flex: 1.35; }
+.vk-shift-l { flex: 1.45; }
+.vk-mod-alpha { flex: 1.35; }
+.vk-shift-r { flex: 1.7; }
 .vk-space { flex: 6; height: 36px; }
+
+/* Multi-character key label typography scaling */
+.vk-mod-shift .vk-main,
+.vk-mod-alpha .vk-main,
+.vk-mod-graph .vk-main,
+.vk-mod-ctrl .vk-main,
+.vk-break .vk-main {
+    font-size: 0.66rem;
+    letter-spacing: -0.2px;
+}
 
 /* Cursor Navigation Cluster */
 .vk-cursor-cluster {
@@ -1199,6 +1276,22 @@ body.hide-controls #touch-controller {
 
 /* Responsive adjustments for mobile screens */
 @media (max-width: 600px) {
+    .vk-lbl-short {
+        display: inline !important;
+    }
+    .vk-lbl-full {
+        display: none !important;
+    }
+
+    .vk-mod-shift .vk-main,
+    .vk-mod-alpha .vk-main,
+    .vk-mod-graph .vk-main,
+    .vk-mod-ctrl .vk-main,
+    .vk-break .vk-main {
+        font-size: 0.54rem;
+        letter-spacing: -0.3px;
+    }
+
     #virtual-keyboard {
         padding: 4px 6px max(8px, calc(4px + env(safe-area-inset-bottom, 0px))) 6px;
     }
@@ -1239,6 +1332,15 @@ body.hide-controls #touch-controller {
 }
 
 @media (max-width: 380px) {
+    .vk-mod-shift .vk-main,
+    .vk-mod-alpha .vk-main,
+    .vk-mod-graph .vk-main,
+    .vk-mod-ctrl .vk-main,
+    .vk-break .vk-main {
+        font-size: 0.48rem;
+        letter-spacing: -0.4px;
+    }
+
     #virtual-keyboard {
         padding: 3px 4px max(6px, calc(3px + env(safe-area-inset-bottom, 0px))) 4px;
     }
