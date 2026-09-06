@@ -10,7 +10,7 @@
  * 4. Controlled Skip-Waiting: listens for UI 'SKIP_WAITING' messages to reload cleanly.
  */
 
-const CACHE_VERSION = 'mz800-pwa-v1.0.2';
+const CACHE_VERSION = 'mz800-pwa-v1.0.3';
 const CACHE_NAME = CACHE_VERSION;
 
 const PRECACHE_ASSETS = [

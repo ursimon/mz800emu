@@ -657,6 +657,7 @@
 
             const openModal = () => {
                 modal.classList.remove('hidden');
+                modal.style.display = 'flex';
                 if (textarea) {
                     textarea.value = '';
                     setTimeout(() => textarea.focus(), 100);
@@ -670,6 +671,7 @@
                     this.abortTyping = true;
                 }
                 modal.classList.add('hidden');
+                modal.style.display = 'none';
             };
 
             btnType.addEventListener('click', openModal);
