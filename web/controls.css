@@ -901,4 +901,423 @@ body.hide-controls #touch-controller {
     background: linear-gradient(135deg, #25476a, #1d5b90);
 }
 
+/* ==========================================================================
+   Sharp MZ-800 Virtual Keyboard Styling
+   Authentic vintage Japanese microcomputer aesthetic with mobile ergonomics
+   ========================================================================== */
+
+#virtual-keyboard {
+    position: relative;
+    width: 100%;
+    flex-shrink: 0;
+    background: linear-gradient(to bottom, #1a1c22 0%, #111216 100%);
+    border-top: 1px solid var(--panel-border);
+    box-shadow: 0 -4px 18px rgba(0, 0, 0, 0.6);
+    display: flex;
+    flex-direction: column;
+    padding: 6px 10px max(10px, calc(6px + env(safe-area-inset-bottom, 0px))) 10px;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    z-index: 9;
+    box-sizing: border-box;
+}
+
+#virtual-keyboard.hidden {
+    display: none !important;
+}
+
+/* Header & Status Bar */
+.vkbd-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0 4px 4px 4px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    margin-bottom: 4px;
+}
+
+.vkbd-status-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.vkbd-title {
+    font-size: 0.68rem;
+    font-weight: 800;
+    letter-spacing: 0.8px;
+    color: #7b8292;
+    text-transform: uppercase;
+}
+
+.vkbd-indicator {
+    font-size: 0.62rem;
+    font-weight: 700;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: #23262f;
+    color: #555b6a;
+    border: 1px solid #303542;
+    transition: all 0.15s ease;
+}
+
+.vkbd-indicator.active {
+    background: #d03400;
+    color: #fff;
+    border-color: #ff5020;
+    box-shadow: 0 0 6px rgba(208, 52, 0, 0.6);
+}
+
+.vkbd-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.vkbd-hdr-btn {
+    background: #272a33;
+    border: 1px solid #3c4150;
+    color: #c4c9d6;
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    touch-action: manipulation;
+    transition: background 0.1s, border-color 0.1s;
+}
+
+.vkbd-hdr-btn:hover {
+    background: #363b47;
+    border-color: #4f576a;
+}
+
+.vkbd-close-btn {
+    color: #ff7777;
+    font-size: 0.85rem;
+    font-weight: 700;
+    padding: 1px 7px;
+}
+
+.vkbd-close-btn:hover {
+    background: #4a2424;
+    color: #ffaaaa;
+}
+
+/* Key Matrix & Rows */
+.vkbd-matrix {
+    display: flex;
+    flex-direction: column;
+    gap: 3.5px;
+    width: 100%;
+    max-width: 980px;
+    margin: 0 auto;
+}
+
+.vk-row {
+    display: flex;
+    width: 100%;
+    gap: 3.5px;
+    justify-content: space-between;
+}
+
+.vk-spacer {
+    flex: 0.8;
+    min-width: 4px;
+}
+
+/* Keycaps: Authentic Sharp MZ-800 Styling */
+.vk-key {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    flex: 1;
+    min-width: 0;
+    height: 38px;
+    border-radius: 4px;
+    border: 1px solid #8e95a5;
+    border-bottom: 2px solid #5a6070;
+    background: linear-gradient(to bottom, #f3f5f8 0%, #d8dce4 100%);
+    color: #17181d;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+    font-weight: 700;
+    font-size: 0.82rem;
+    cursor: pointer;
+    touch-action: none;
+    box-shadow: 0 2px 3px rgba(0, 0, 0, 0.35);
+    padding: 0;
+    transition: transform 0.04s, background 0.05s, border-color 0.05s;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.vk-key:active, .vk-key.pressed {
+    transform: translateY(2px);
+    border-bottom-width: 1px;
+    background: #b2b8c6;
+    box-shadow: 0 1px 1px rgba(0, 0, 0, 0.4);
+}
+
+.vk-main {
+    line-height: 1;
+    pointer-events: none;
+}
+
+.vk-sub {
+    position: absolute;
+    top: 2px;
+    left: 3px;
+    font-size: 0.55rem;
+    font-weight: 600;
+    color: #636b7b;
+    pointer-events: none;
+    line-height: 1;
+    transition: color 0.15s, transform 0.15s;
+}
+
+/* Special & Modifier Keys (Dark Gray) */
+.vk-special {
+    background: linear-gradient(to bottom, #393d4a 0%, #262933 100%);
+    color: #e4e7ef;
+    border-color: #4a5060;
+    border-bottom-color: #1d2028;
+}
+
+.vk-special .vk-sub {
+    color: #98a0b2;
+}
+
+.vk-special:active, .vk-special.pressed {
+    background: #1c1e26;
+    border-color: #2e3340;
+}
+
+/* Function Keys (F1-F5) with Sharp Blue label */
+.vk-fn {
+    background: linear-gradient(to bottom, #2d323f 0%, #1e222b 100%);
+    color: #24ccff;
+    border-color: #3b4252;
+    border-bottom-color: #15181f;
+    height: 27px;
+    font-size: 0.72rem;
+}
+
+.vk-fn:active, .vk-fn.pressed {
+    background: #171a22;
+    color: #6ee7b7;
+}
+
+/* BREAK key with Red accent */
+.vk-break {
+    background: linear-gradient(to bottom, #4c2222 0%, #351717 100%);
+    color: #ffa0a0;
+    border-color: #6e3030;
+    border-bottom-color: #250f0f;
+    height: 27px;
+    font-size: 0.68rem;
+}
+
+.vk-break:active, .vk-break.pressed {
+    background: #c02020;
+    color: #fff;
+    border-color: #ff5050;
+}
+
+.vk-row-0 .vk-special {
+    height: 27px;
+    font-size: 0.68rem;
+}
+
+/* Specific key flex widths */
+.vk-tab { flex: 1.35; }
+.vk-cr { flex: 1.65; color: #24ccff; font-weight: 800; }
+.vk-shift-l { flex: 1.4; }
+.vk-shift-r { flex: 1.8; }
+.vk-space { flex: 6; height: 36px; }
+
+/* Cursor Navigation Cluster */
+.vk-cursor-cluster {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    flex: 3;
+    justify-content: flex-end;
+}
+
+.vk-cursor-col {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1;
+    height: 36px;
+}
+
+.vk-cursor-col .vk-cursor {
+    height: 17px;
+    font-size: 0.55rem;
+}
+
+.vk-cursor {
+    flex: 1;
+    height: 36px;
+    background: linear-gradient(to bottom, #393d4a 0%, #262933 100%);
+    color: #a8b0c2;
+    border: 1px solid #4a5060;
+    border-bottom: 2px solid #1d2028;
+    font-size: 0.75rem;
+}
+
+/* Sticky / Latching Modifier Feedback */
+.vk-key.latched {
+    background: linear-gradient(to bottom, #f57c00 0%, #e65100 100%) !important;
+    border-color: #ff9800 !important;
+    color: #fff !important;
+    box-shadow: 0 0 10px rgba(255, 152, 0, 0.7) !important;
+}
+
+.vk-key.locked {
+    background: linear-gradient(to bottom, #e53935 0%, #b71c1c 100%) !important;
+    border-color: #ff5252 !important;
+    color: #fff !important;
+    box-shadow: 0 0 12px rgba(244, 67, 54, 0.85) !important;
+}
+
+/* Shifted View dynamic highlights */
+.vkbd-container.vkbd-shifted .vk-sub {
+    color: #d03400;
+    font-weight: 800;
+    transform: scale(1.15);
+}
+
+/* Responsive adjustments for mobile screens */
+@media (max-width: 600px) {
+    #virtual-keyboard {
+        padding: 4px 6px max(8px, calc(4px + env(safe-area-inset-bottom, 0px))) 6px;
+    }
+    .vkbd-matrix {
+        gap: 2.5px;
+    }
+    .vk-row {
+        gap: 2.5px;
+    }
+    .vk-key {
+        height: 34px;
+        font-size: 0.72rem;
+        border-radius: 3px;
+    }
+    .vk-key .vk-sub {
+        font-size: 0.48rem;
+        top: 1.5px;
+        left: 2px;
+    }
+    .vk-fn, .vk-row-0 .vk-special, .vk-break {
+        height: 23px;
+        font-size: 0.6rem;
+    }
+    .vk-space {
+        height: 33px;
+    }
+    .vk-cursor-col {
+        height: 33px;
+    }
+    .vk-cursor-col .vk-cursor {
+        height: 15.5px;
+        font-size: 0.5rem;
+    }
+    .vk-cursor {
+        height: 33px;
+        font-size: 0.68rem;
+    }
+}
+
+@media (max-width: 380px) {
+    #virtual-keyboard {
+        padding: 3px 4px max(6px, calc(3px + env(safe-area-inset-bottom, 0px))) 4px;
+    }
+    .vkbd-matrix {
+        gap: 2px;
+    }
+    .vk-row {
+        gap: 2px;
+    }
+    .vk-key {
+        height: 30px;
+        font-size: 0.65rem;
+        border-radius: 2.5px;
+    }
+    .vk-key .vk-sub {
+        font-size: 0.42rem;
+        top: 1px;
+        left: 1.5px;
+    }
+    .vk-fn, .vk-row-0 .vk-special, .vk-break {
+        height: 21px;
+        font-size: 0.55rem;
+    }
+    .vk-space {
+        height: 29px;
+    }
+    .vk-cursor-col {
+        height: 29px;
+    }
+    .vk-cursor-col .vk-cursor {
+        height: 13.5px;
+    }
+    .vk-cursor {
+        height: 29px;
+    }
+    .vkbd-title {
+        display: none;
+    }
+}
+
+/* Landscape mobile orientation: preserve maximal CRT screen height */
+@media (max-height: 500px) {
+    #virtual-keyboard {
+        padding: 3px 8px max(6px, calc(3px + env(safe-area-inset-bottom, 0px))) 8px;
+    }
+    .vkbd-header {
+        padding-bottom: 2px;
+        margin-bottom: 2px;
+    }
+    .vkbd-matrix {
+        gap: 2px;
+    }
+    .vk-row {
+        gap: 2px;
+    }
+    .vk-key {
+        height: 24px;
+        font-size: 0.65rem;
+        border-radius: 3px;
+    }
+    .vk-key .vk-sub {
+        font-size: 0.45rem;
+        top: 1px;
+        left: 2px;
+    }
+    .vk-fn, .vk-row-0 .vk-special, .vk-break {
+        height: 18px;
+        font-size: 0.52rem;
+    }
+    .vk-space {
+        height: 24px;
+    }
+    .vk-cursor-col {
+        height: 24px;
+    }
+    .vk-cursor-col .vk-cursor {
+        height: 11px;
+        font-size: 0.45rem;
+    }
+    .vk-cursor {
+        height: 24px;
+        font-size: 0.62rem;
+    }
+}
+
+
 

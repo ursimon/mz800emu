@@ -31,6 +31,33 @@
         'ControlLeft':{ col: 8, bit: 6 },
         'ControlRight':{ col: 8, bit: 6 },
 
+        // Function keys (F1 - F5)
+        'F1': { col: 9, bit: 7 },
+        'F2': { col: 9, bit: 6 },
+        'F3': { col: 9, bit: 5 },
+        'F4': { col: 9, bit: 4 },
+        'F5': { col: 9, bit: 3 },
+
+        // Symbols and punctuation
+        'Minus':        { col: 6, bit: 5 }, '-': { col: 6, bit: 5 },
+        'Equal':        { col: 6, bit: 6 }, '=': { col: 6, bit: 6 }, // UP_ARROW / ~
+        'Backslash':    { col: 6, bit: 7 }, '\\': { col: 6, bit: 7 },
+        'BracketLeft':  { col: 1, bit: 4 }, '[': { col: 1, bit: 4 },
+        'BracketRight': { col: 1, bit: 3 }, ']': { col: 1, bit: 3 },
+        'Semicolon':    { col: 0, bit: 2 }, ';': { col: 0, bit: 2 },
+        'Quote':        { col: 0, bit: 1 }, ':': { col: 0, bit: 1 }, '\'': { col: 0, bit: 1 },
+        'Comma':        { col: 6, bit: 1 }, ',': { col: 6, bit: 1 },
+        'Period':       { col: 6, bit: 0 }, '.': { col: 6, bit: 0 },
+        'Slash':        { col: 7, bit: 0 }, '/': { col: 7, bit: 0 },
+        'Backquote':    { col: 0, bit: 7 }, '`': { col: 0, bit: 7 }, // BLANK
+        'CapsLock':     { col: 0, bit: 6 },                           // GRAPH mode
+        'End':          { col: 8, bit: 7 },                           // BREAK
+        'Home':         { col: 7, bit: 6 },                           // DEL
+        'F6':           { col: 1, bit: 5 },                           // @
+        'F7':           { col: 6, bit: 7 },                           // \
+        'F8':           { col: 7, bit: 1 },                           // ?
+        'F9':           { col: 0, bit: 5 },                           // LIBRA / DOWN_ARROW
+
         // Numbers
         'Digit1': { col: 5, bit: 7 }, '1': { col: 5, bit: 7 },
         'Digit2': { col: 5, bit: 6 }, '2': { col: 5, bit: 6 },
@@ -77,6 +104,7 @@
             this.activeKeys = new Set();
             this.setupPhysicalKeyboard();
             this.setupTouchControls();
+            this.virtualKeyboard = new VirtualKeyboard(this);
         }
 
         sendKey(col, bit, pressed) {
@@ -273,5 +301,410 @@
         }
     }
 
+    // ASCII to Sharp MZ-800 Key Matrix Translation Table
+    const ASCII_TO_MZ = {
+        // Uppercase letters (Base in MZ-800 ROM)
+        'A': { col: 4, bit: 7, shift: false }, 'B': { col: 4, bit: 6, shift: false },
+        'C': { col: 4, bit: 5, shift: false }, 'D': { col: 4, bit: 4, shift: false },
+        'E': { col: 4, bit: 3, shift: false }, 'F': { col: 4, bit: 2, shift: false },
+        'G': { col: 4, bit: 1, shift: false }, 'H': { col: 4, bit: 0, shift: false },
+        'I': { col: 3, bit: 7, shift: false }, 'J': { col: 3, bit: 6, shift: false },
+        'K': { col: 3, bit: 5, shift: false }, 'L': { col: 3, bit: 4, shift: false },
+        'M': { col: 3, bit: 3, shift: false }, 'N': { col: 3, bit: 2, shift: false },
+        'O': { col: 3, bit: 1, shift: false }, 'P': { col: 3, bit: 0, shift: false },
+        'Q': { col: 2, bit: 7, shift: false }, 'R': { col: 2, bit: 6, shift: false },
+        'S': { col: 2, bit: 5, shift: false }, 'T': { col: 2, bit: 4, shift: false },
+        'U': { col: 2, bit: 3, shift: false }, 'V': { col: 2, bit: 2, shift: false },
+        'W': { col: 2, bit: 1, shift: false }, 'X': { col: 2, bit: 0, shift: false },
+        'Y': { col: 1, bit: 7, shift: false }, 'Z': { col: 1, bit: 6, shift: false },
+
+        // Lowercase letters (Shifted in MZ-800 ROM)
+        'a': { col: 4, bit: 7, shift: true }, 'b': { col: 4, bit: 6, shift: true },
+        'c': { col: 4, bit: 5, shift: true }, 'd': { col: 4, bit: 4, shift: true },
+        'e': { col: 4, bit: 3, shift: true }, 'f': { col: 4, bit: 2, shift: true },
+        'g': { col: 4, bit: 1, shift: true }, 'h': { col: 4, bit: 0, shift: true },
+        'i': { col: 3, bit: 7, shift: true }, 'j': { col: 3, bit: 6, shift: true },
+        'k': { col: 3, bit: 5, shift: true }, 'l': { col: 3, bit: 4, shift: true },
+        'm': { col: 3, bit: 3, shift: true }, 'n': { col: 3, bit: 2, shift: true },
+        'o': { col: 3, bit: 1, shift: true }, 'p': { col: 3, bit: 0, shift: true },
+        'q': { col: 2, bit: 7, shift: true }, 'r': { col: 2, bit: 6, shift: true },
+        's': { col: 2, bit: 5, shift: true }, 't': { col: 2, bit: 4, shift: true },
+        'u': { col: 2, bit: 3, shift: true }, 'v': { col: 2, bit: 2, shift: true },
+        'w': { col: 2, bit: 1, shift: true }, 'x': { col: 2, bit: 0, shift: true },
+        'y': { col: 1, bit: 7, shift: true }, 'z': { col: 1, bit: 6, shift: true },
+
+        // Digits (Base)
+        '0': { col: 6, bit: 3, shift: false },
+        '1': { col: 5, bit: 7, shift: false },
+        '2': { col: 5, bit: 6, shift: false },
+        '3': { col: 5, bit: 5, shift: false },
+        '4': { col: 5, bit: 4, shift: false },
+        '5': { col: 5, bit: 3, shift: false },
+        '6': { col: 5, bit: 2, shift: false },
+        '7': { col: 5, bit: 1, shift: false },
+        '8': { col: 5, bit: 0, shift: false },
+        '9': { col: 6, bit: 2, shift: false },
+
+        // Shifted symbols
+        '!': { col: 5, bit: 7, shift: true },
+        '"': { col: 5, bit: 6, shift: true },
+        '#': { col: 5, bit: 5, shift: true },
+        '$': { col: 5, bit: 4, shift: true },
+        '%': { col: 5, bit: 3, shift: true },
+        '&': { col: 5, bit: 2, shift: true },
+        '\'': { col: 5, bit: 1, shift: true },
+        '(': { col: 5, bit: 0, shift: true },
+        ')': { col: 6, bit: 2, shift: true },
+        'π': { col: 6, bit: 3, shift: true },
+        '=': { col: 6, bit: 5, shift: true },
+        '~': { col: 6, bit: 6, shift: true },
+        '}': { col: 6, bit: 7, shift: true },
+        '{': { col: 1, bit: 4, shift: true },
+        '+': { col: 0, bit: 2, shift: true },
+        '*': { col: 0, bit: 1, shift: true },
+        '|': { col: 1, bit: 3, shift: true },
+        '<': { col: 6, bit: 1, shift: true },
+        '>': { col: 6, bit: 0, shift: true },
+        '£': { col: 0, bit: 5, shift: true },
+
+        // Base symbols
+        '-': { col: 6, bit: 5, shift: false },
+        '^': { col: 6, bit: 6, shift: false },
+        '\\': { col: 6, bit: 7, shift: false },
+        '@': { col: 1, bit: 5, shift: false },
+        '[': { col: 1, bit: 4, shift: false },
+        ']': { col: 1, bit: 3, shift: false },
+        ';': { col: 0, bit: 2, shift: false },
+        ':': { col: 0, bit: 1, shift: false },
+        ',': { col: 6, bit: 1, shift: false },
+        '.': { col: 6, bit: 0, shift: false },
+        '/': { col: 7, bit: 0, shift: false },
+        '?': { col: 7, bit: 1, shift: false },
+        '_': { col: 0, bit: 7, shift: false },
+        ' ': { col: 6, bit: 4, shift: false },
+        '\n': { col: 0, bit: 0, shift: false },
+        '\r': { col: 0, bit: 0, shift: false },
+        '\t': { col: 0, bit: 3, shift: false }
+    };
+
+    /**
+     * VirtualKeyboard — Touch-first, authentic Sharp MZ-800 on-screen keyboard
+     */
+    class VirtualKeyboard {
+        constructor(controllerManager) {
+            this.manager = controllerManager;
+            this.container = document.getElementById('virtual-keyboard');
+            this.shiftMode = 0; // 0 = off, 1 = latched (next key), 2 = locked (caps/shift lock)
+            this.ctrlMode = 0;  // 0 = off, 1 = latched
+            this.graphMode = false;
+            this.lastShiftTap = 0;
+            this.activePointers = new Map();
+            this.isTyping = false;
+            this.abortTyping = false;
+
+            if (this.container) {
+                this.bindKeys();
+                this.setupTypeModal();
+            }
+        }
+
+        toggle() {
+            if (!this.container) return;
+            const willShow = this.container.classList.contains('hidden');
+            if (willShow) {
+                this.show();
+            } else {
+                this.hide();
+            }
+        }
+
+        show() {
+            if (!this.container) return;
+            this.container.classList.remove('hidden');
+            this.updateVisibility(true);
+        }
+
+        hide() {
+            if (!this.container) return;
+            this.container.classList.add('hidden');
+            // Release any active modifiers
+            if (this.shiftMode > 0) {
+                this.shiftMode = 0;
+                this.manager.sendKey(8, 0, false);
+            }
+            if (this.ctrlMode > 0) {
+                this.ctrlMode = 0;
+                this.manager.sendKey(8, 6, false);
+            }
+            this.updateModifierUI();
+            this.updateVisibility(false);
+        }
+
+        updateVisibility(isVisible) {
+            const btn = document.getElementById('btn-keyboard');
+            if (btn) btn.classList.toggle('active', isVisible);
+            if (window.MZ800 && typeof window.MZ800.onLayoutChange === 'function') {
+                window.MZ800.onLayoutChange();
+            }
+        }
+
+        updateModifierUI() {
+            const indShift = document.getElementById('vkbd-ind-shift');
+            const indCtrl = document.getElementById('vkbd-ind-ctrl');
+            const indGraph = document.getElementById('vkbd-ind-graph');
+
+            if (indShift) indShift.classList.toggle('active', this.shiftMode > 0);
+            if (indCtrl) indCtrl.classList.toggle('active', this.ctrlMode > 0);
+            if (indGraph) indGraph.classList.toggle('active', this.graphMode);
+
+            if (this.container) {
+                this.container.classList.toggle('vkbd-shifted', this.shiftMode > 0);
+
+                const shiftKeys = this.container.querySelectorAll('.vk-mod-shift');
+                shiftKeys.forEach(k => {
+                    k.classList.toggle('latched', this.shiftMode === 1);
+                    k.classList.toggle('locked', this.shiftMode === 2);
+                });
+
+                const ctrlKeys = this.container.querySelectorAll('.vk-mod-ctrl');
+                ctrlKeys.forEach(k => {
+                    k.classList.toggle('latched', this.ctrlMode === 1);
+                });
+
+                const graphKeys = this.container.querySelectorAll('.vk-mod-graph');
+                graphKeys.forEach(k => {
+                    k.classList.toggle('latched', this.graphMode);
+                });
+            }
+        }
+
+        bindKeys() {
+            const keys = this.container.querySelectorAll('.vk-key');
+
+            const handleDown = (e, keyEl) => {
+                if (e.cancelable) e.preventDefault();
+
+                const col = parseInt(keyEl.dataset.col, 10);
+                const bit = parseInt(keyEl.dataset.bit, 10);
+                if (isNaN(col) || isNaN(bit)) return;
+
+                if (navigator.vibrate) {
+                    try { navigator.vibrate(8); } catch (err) {}
+                }
+
+                // Modifier: SHIFT (col 8, bit 0)
+                if (col === 8 && bit === 0) {
+                    const now = Date.now();
+                    if (now - this.lastShiftTap < 380 && this.shiftMode > 0) {
+                        // Double tap: toggle shift lock
+                        this.shiftMode = (this.shiftMode === 2) ? 0 : 2;
+                    } else {
+                        // Single tap: latch or release
+                        this.shiftMode = (this.shiftMode === 0) ? 1 : 0;
+                    }
+                    this.lastShiftTap = (this.shiftMode === 0) ? 0 : now;
+                    this.manager.sendKey(8, 0, this.shiftMode > 0);
+                    this.updateModifierUI();
+                    return;
+                }
+
+                // Modifier: CTRL (col 8, bit 6)
+                if (col === 8 && bit === 6) {
+                    this.ctrlMode = (this.ctrlMode === 0) ? 1 : 0;
+                    this.manager.sendKey(8, 6, this.ctrlMode > 0);
+                    this.updateModifierUI();
+                    return;
+                }
+
+                // Modifier: GRAPH (col 0, bit 6)
+                if (col === 0 && bit === 6) {
+                    this.manager.sendKey(0, 6, true);
+                    setTimeout(() => this.manager.sendKey(0, 6, false), 40);
+                    this.graphMode = !this.graphMode;
+                    this.updateModifierUI();
+                    return;
+                }
+
+                // Modifier: ALPHA (col 0, bit 4)
+                if (col === 0 && bit === 4) {
+                    this.manager.sendKey(0, 4, true);
+                    setTimeout(() => this.manager.sendKey(0, 4, false), 40);
+                    this.graphMode = false;
+                    this.updateModifierUI();
+                    return;
+                }
+
+                // Regular key press
+                const pointerId = (e.pointerId !== undefined) ? e.pointerId : ('touch-' + (e.identifier || 0));
+                this.activePointers.set(pointerId, { col, bit, el: keyEl });
+                keyEl.classList.add('pressed');
+                this.manager.sendKey(col, bit, true);
+            };
+
+            const handleUp = (e, keyEl) => {
+                if (e && e.cancelable) e.preventDefault();
+                const pointerId = (e && e.pointerId !== undefined) ? e.pointerId : ('touch-' + (e && e.identifier || 0));
+
+                let info = this.activePointers.get(pointerId);
+                if (!info && keyEl) {
+                    // Fallback search by element
+                    for (const [pid, val] of this.activePointers.entries()) {
+                        if (val.el === keyEl) {
+                            info = val;
+                            this.activePointers.delete(pid);
+                            break;
+                        }
+                    }
+                } else if (info) {
+                    this.activePointers.delete(pointerId);
+                }
+
+                if (info) {
+                    info.el.classList.remove('pressed');
+                    this.manager.sendKey(info.col, info.bit, false);
+
+                    // Auto-unlatch single-use modifiers
+                    if (this.shiftMode === 1) {
+                        this.shiftMode = 0;
+                        this.manager.sendKey(8, 0, false);
+                        this.updateModifierUI();
+                    }
+                    if (this.ctrlMode === 1) {
+                        this.ctrlMode = 0;
+                        this.manager.sendKey(8, 6, false);
+                        this.updateModifierUI();
+                    }
+                }
+            };
+
+            keys.forEach(k => {
+                // Pointer events
+                k.addEventListener('pointerdown', (e) => handleDown(e, k));
+                k.addEventListener('pointerup', (e) => handleUp(e, k));
+                k.addEventListener('pointerleave', (e) => handleUp(e, k));
+                k.addEventListener('pointercancel', (e) => handleUp(e, k));
+                k.addEventListener('contextmenu', (e) => e.preventDefault());
+            });
+
+            // Global safety: pointerup on window releases all keys
+            window.addEventListener('pointerup', () => {
+                for (const [, info] of this.activePointers.entries()) {
+                    info.el.classList.remove('pressed');
+                    this.manager.sendKey(info.col, info.bit, false);
+                }
+                this.activePointers.clear();
+            });
+
+            // Close button
+            const btnClose = document.getElementById('btn-vkbd-close');
+            if (btnClose) {
+                btnClose.addEventListener('click', () => this.hide());
+            }
+        }
+
+        async typeString(str, onProgress) {
+            if (!str) return;
+            this.isTyping = true;
+            this.abortTyping = false;
+
+            for (let i = 0; i < str.length; i++) {
+                if (this.abortTyping) break;
+
+                const char = str[i];
+                const mapping = ASCII_TO_MZ[char];
+
+                if (onProgress) {
+                    onProgress(i + 1, str.length);
+                }
+
+                if (mapping) {
+                    if (mapping.shift) {
+                        this.manager.sendKey(8, 0, true);
+                        await new Promise(r => setTimeout(r, 15));
+                    }
+
+                    this.manager.sendKey(mapping.col, mapping.bit, true);
+                    await new Promise(r => setTimeout(r, 25));
+
+                    this.manager.sendKey(mapping.col, mapping.bit, false);
+
+                    if (mapping.shift) {
+                        await new Promise(r => setTimeout(r, 10));
+                        this.manager.sendKey(8, 0, false);
+                    }
+
+                    await new Promise(r => setTimeout(r, 25));
+                } else {
+                    // Unknown character, skip quickly
+                    await new Promise(r => setTimeout(r, 10));
+                }
+            }
+
+            this.isTyping = false;
+        }
+
+        setupTypeModal() {
+            const btnType = document.getElementById('btn-vkbd-type');
+            const modal = document.getElementById('vkbd-type-modal');
+            const btnClose = document.getElementById('vkbd-modal-close');
+            const btnCancel = document.getElementById('vkbd-type-cancel');
+            const btnSend = document.getElementById('vkbd-type-send');
+            const textarea = document.getElementById('vkbd-type-textarea');
+            const progress = document.getElementById('vkbd-type-progress');
+            const appendCr = document.getElementById('vkbd-type-append-cr');
+
+            if (!btnType || !modal) return;
+
+            const openModal = () => {
+                modal.classList.remove('hidden');
+                if (textarea) {
+                    textarea.value = '';
+                    setTimeout(() => textarea.focus(), 100);
+                }
+                if (progress) progress.style.display = 'none';
+                if (btnSend) btnSend.disabled = false;
+            };
+
+            const closeModal = () => {
+                if (this.isTyping) {
+                    this.abortTyping = true;
+                }
+                modal.classList.add('hidden');
+            };
+
+            btnType.addEventListener('click', openModal);
+            if (btnClose) btnClose.addEventListener('click', closeModal);
+            if (btnCancel) btnCancel.addEventListener('click', closeModal);
+
+            modal.addEventListener('click', (e) => {
+                if (e.target === modal) closeModal();
+            });
+
+            if (btnSend && textarea) {
+                btnSend.addEventListener('click', async () => {
+                    let text = textarea.value;
+                    if (!text) return;
+                    if (appendCr && appendCr.checked && !text.endsWith('\n')) {
+                        text += '\n';
+                    }
+
+                    btnSend.disabled = true;
+                    if (progress) {
+                        progress.style.display = 'inline';
+                        progress.textContent = 'Sending 0/' + text.length + '...';
+                    }
+
+                    await this.typeString(text, (cur, total) => {
+                        if (progress) progress.textContent = `Sending ${cur}/${total}...`;
+                    });
+
+                    closeModal();
+                });
+            }
+        }
+    }
+
+    window.VirtualKeyboard = VirtualKeyboard;
     window.ControllerManager = ControllerManager;
 })(window);
+

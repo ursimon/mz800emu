@@ -319,7 +319,8 @@
                 toggleSpeed: () => this.toggleSpeed(),
                 toggleMute: () => this.toggleMute(),
                 setAspectMode: (mode) => this.setAspectMode(mode),
-                toggleAspectMode: () => this.toggleAspectMode()
+                toggleAspectMode: () => this.toggleAspectMode(),
+                onLayoutChange: () => this.updateDisplaySize()
             };
 
             // Start loop
@@ -954,11 +955,11 @@
         const raw = (search.length > 1) ? search.substring(1) : (hash.length > 1 ? hash.substring(1) : '');
         if (!raw) return null;
 
-        const emuFlags = ['speed', 'aspect', 'mute', 'muted', 'sound', 'crt', 'gamepad', 'proxy', 'cors', 'turbo'];
+        const emuFlags = ['speed', 'aspect', 'mute', 'muted', 'sound', 'crt', 'gamepad', 'keyboard', 'kbd', 'proxy', 'cors', 'turbo'];
         const options = {};
 
         // Parse emulator flags if present
-        const flagMatches = raw.matchAll(/[?&](speed|aspect|mute|muted|sound|crt|gamepad|proxy|cors)=([^&#]+)/gi);
+        const flagMatches = raw.matchAll(/[?&](speed|aspect|mute|muted|sound|crt|gamepad|keyboard|kbd|proxy|cors)=([^&#]+)/gi);
         for (const m of flagMatches) {
             options[m[1].toLowerCase()] = decodeURIComponent(m[2]);
         }
@@ -1045,10 +1046,33 @@
         }
 
         const btnGamepad = document.getElementById('btn-gamepad');
+        const btnKeyboard = document.getElementById('btn-keyboard');
+
         if (btnGamepad) {
             btnGamepad.addEventListener('click', () => {
-                document.body.classList.toggle('hide-controls');
-                btnGamepad.classList.toggle('active');
+                const willHide = !document.body.classList.contains('hide-controls');
+                document.body.classList.toggle('hide-controls', willHide);
+                btnGamepad.classList.toggle('active', !willHide);
+                // When showing gamepad on mobile, hide virtual keyboard to preserve space
+                if (!willHide && controller.virtualKeyboard) {
+                    controller.virtualKeyboard.hide();
+                }
+                emulator.updateDisplaySize();
+            });
+        }
+
+        if (btnKeyboard && controller.virtualKeyboard) {
+            btnKeyboard.addEventListener('click', () => {
+                const vkbd = controller.virtualKeyboard;
+                const isOpening = vkbd.container ? vkbd.container.classList.contains('hidden') : false;
+                if (isOpening) {
+                    // Hide gamepad when opening keyboard to maximize screen space
+                    document.body.classList.add('hide-controls');
+                    if (btnGamepad) btnGamepad.classList.remove('active');
+                    vkbd.show();
+                } else {
+                    vkbd.hide();
+                }
                 emulator.updateDisplaySize();
             });
         }
@@ -1133,6 +1157,13 @@
             if (initial.crt === '0' || initial.crt === 'off') {
                 if (crtContainer) crtContainer.classList.remove('crt-scanlines');
                 if (btnCrt) btnCrt.classList.remove('active');
+            }
+            if (initial.keyboard === '1' || initial.kbd === '1') {
+                if (controller.virtualKeyboard) {
+                    document.body.classList.add('hide-controls');
+                    if (btnGamepad) btnGamepad.classList.remove('active');
+                    controller.virtualKeyboard.show();
+                }
             }
 
             if (initial.url) {

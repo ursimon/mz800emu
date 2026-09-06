@@ -30,6 +30,7 @@
                 <button class="btn" onclick="document.getElementById('file-input').click()" title="Open local MZF / DSK / ZIP file">📂 File</button>
                 <button id="btn-reset" class="btn">🔄 Reset</button>
                 <button id="btn-gamepad" class="btn" title="Toggle On-screen Touch Gamepad">🎮 Pad</button>
+                <button id="btn-keyboard" class="btn" title="Toggle Sharp MZ-800 Virtual Keyboard">⌨️ Kbd</button>
                 <button id="btn-fullscreen" class="btn" title="Toggle Fullscreen">⛶ Fullscreen</button>
             </div>
 
@@ -111,6 +112,153 @@
                 </button>
             </div>
         </footer>
+
+        <!-- Sharp MZ-800 Virtual Keyboard (Mobile-First, Collapsible) -->
+        <section id="virtual-keyboard" class="vkbd-container hidden" role="region" aria-label="Sharp MZ-800 Virtual Keyboard">
+            <!-- Keyboard Header / Control Bar -->
+            <div class="vkbd-header">
+                <div class="vkbd-status-group">
+                    <span class="vkbd-title">SHARP MZ-800</span>
+                    <span id="vkbd-ind-shift" class="vkbd-indicator" title="Shift Status">SHIFT</span>
+                    <span id="vkbd-ind-ctrl" class="vkbd-indicator" title="Control Status">CTRL</span>
+                    <span id="vkbd-ind-graph" class="vkbd-indicator" title="Graphic Mode Status">GRAPH</span>
+                </div>
+                <div class="vkbd-actions">
+                    <button id="btn-vkbd-type" class="vkbd-hdr-btn" title="Quick Type or Paste text into MZ-800">📝 Paste / Type</button>
+                    <button id="btn-vkbd-close" class="vkbd-hdr-btn vkbd-close-btn" aria-label="Close keyboard" title="Hide Keyboard">✕</button>
+                </div>
+            </div>
+
+            <div class="vkbd-matrix">
+                <!-- Row 0: Function & Edit Keys -->
+                <div class="vk-row vk-row-0">
+                    <button class="vk-key vk-fn" data-col="9" data-bit="7"><span class="vk-main">F1</span></button>
+                    <button class="vk-key vk-fn" data-col="9" data-bit="6"><span class="vk-main">F2</span></button>
+                    <button class="vk-key vk-fn" data-col="9" data-bit="5"><span class="vk-main">F3</span></button>
+                    <button class="vk-key vk-fn" data-col="9" data-bit="4"><span class="vk-main">F4</span></button>
+                    <button class="vk-key vk-fn" data-col="9" data-bit="3"><span class="vk-main">F5</span></button>
+                    <div class="vk-spacer"></div>
+                    <button class="vk-key vk-special" data-col="7" data-bit="7"><span class="vk-sub">CLS</span><span class="vk-main">INST</span></button>
+                    <button class="vk-key vk-special" data-col="7" data-bit="6"><span class="vk-sub">HOME</span><span class="vk-main">DEL</span></button>
+                    <button class="vk-key vk-break" data-col="8" data-bit="7"><span class="vk-main">BREAK</span></button>
+                </div>
+
+                <!-- Row 1: Numbers and Graphic Symbols -->
+                <div class="vk-row vk-row-1">
+                    <button class="vk-key vk-special vk-mod-graph" data-col="0" data-bit="6"><span class="vk-main">GRAPH</span></button>
+                    <button class="vk-key" data-col="5" data-bit="7"><span class="vk-sub">!</span><span class="vk-main">1</span></button>
+                    <button class="vk-key" data-col="5" data-bit="6"><span class="vk-sub">"</span><span class="vk-main">2</span></button>
+                    <button class="vk-key" data-col="5" data-bit="5"><span class="vk-sub">#</span><span class="vk-main">3</span></button>
+                    <button class="vk-key" data-col="5" data-bit="4"><span class="vk-sub">$</span><span class="vk-main">4</span></button>
+                    <button class="vk-key" data-col="5" data-bit="3"><span class="vk-sub">%</span><span class="vk-main">5</span></button>
+                    <button class="vk-key" data-col="5" data-bit="2"><span class="vk-sub">&amp;</span><span class="vk-main">6</span></button>
+                    <button class="vk-key" data-col="5" data-bit="1"><span class="vk-sub">'</span><span class="vk-main">7</span></button>
+                    <button class="vk-key" data-col="5" data-bit="0"><span class="vk-sub">(</span><span class="vk-main">8</span></button>
+                    <button class="vk-key" data-col="6" data-bit="2"><span class="vk-sub">)</span><span class="vk-main">9</span></button>
+                    <button class="vk-key" data-col="6" data-bit="3"><span class="vk-sub">π</span><span class="vk-main">0</span></button>
+                    <button class="vk-key" data-col="6" data-bit="5"><span class="vk-sub">=</span><span class="vk-main">-</span></button>
+                    <button class="vk-key" data-col="6" data-bit="6"><span class="vk-sub">~</span><span class="vk-main">↑</span></button>
+                    <button class="vk-key" data-col="6" data-bit="7"><span class="vk-sub">}</span><span class="vk-main">\</span></button>
+                </div>
+
+                <!-- Row 2: TAB, Q..P, @, [, DOWN_ARROW, BLANK -->
+                <div class="vk-row vk-row-2">
+                    <button class="vk-key vk-special vk-tab" data-col="0" data-bit="3"><span class="vk-main">TAB</span></button>
+                    <button class="vk-key" data-col="2" data-bit="7"><span class="vk-main">Q</span></button>
+                    <button class="vk-key" data-col="2" data-bit="1"><span class="vk-main">W</span></button>
+                    <button class="vk-key" data-col="4" data-bit="3"><span class="vk-main">E</span></button>
+                    <button class="vk-key" data-col="2" data-bit="6"><span class="vk-main">R</span></button>
+                    <button class="vk-key" data-col="2" data-bit="4"><span class="vk-main">T</span></button>
+                    <button class="vk-key" data-col="1" data-bit="7"><span class="vk-main">Y</span></button>
+                    <button class="vk-key" data-col="2" data-bit="3"><span class="vk-main">U</span></button>
+                    <button class="vk-key" data-col="3" data-bit="7"><span class="vk-main">I</span></button>
+                    <button class="vk-key" data-col="3" data-bit="1"><span class="vk-main">O</span></button>
+                    <button class="vk-key" data-col="3" data-bit="0"><span class="vk-main">P</span></button>
+                    <button class="vk-key" data-col="1" data-bit="5"><span class="vk-main">@</span></button>
+                    <button class="vk-key" data-col="1" data-bit="4"><span class="vk-sub">{</span><span class="vk-main">[</span></button>
+                    <button class="vk-key" data-col="0" data-bit="5"><span class="vk-sub">£</span><span class="vk-main">↓</span></button>
+                    <button class="vk-key vk-special" data-col="0" data-bit="7"><span class="vk-main">_</span></button>
+                </div>
+
+                <!-- Row 3: CTRL, A..L, ;, :, ], CR -->
+                <div class="vk-row vk-row-3">
+                    <button class="vk-key vk-special vk-mod-ctrl" data-col="8" data-bit="6"><span class="vk-main">CTRL</span></button>
+                    <button class="vk-key" data-col="4" data-bit="7"><span class="vk-main">A</span></button>
+                    <button class="vk-key" data-col="2" data-bit="5"><span class="vk-main">S</span></button>
+                    <button class="vk-key" data-col="4" data-bit="4"><span class="vk-main">D</span></button>
+                    <button class="vk-key" data-col="4" data-bit="2"><span class="vk-main">F</span></button>
+                    <button class="vk-key" data-col="4" data-bit="1"><span class="vk-main">G</span></button>
+                    <button class="vk-key" data-col="4" data-bit="0"><span class="vk-main">H</span></button>
+                    <button class="vk-key" data-col="3" data-bit="6"><span class="vk-main">J</span></button>
+                    <button class="vk-key" data-col="3" data-bit="5"><span class="vk-main">K</span></button>
+                    <button class="vk-key" data-col="3" data-bit="4"><span class="vk-main">L</span></button>
+                    <button class="vk-key" data-col="0" data-bit="2"><span class="vk-sub">+</span><span class="vk-main">;</span></button>
+                    <button class="vk-key" data-col="0" data-bit="1"><span class="vk-sub">*</span><span class="vk-main">:</span></button>
+                    <button class="vk-key" data-col="1" data-bit="3"><span class="vk-sub">|</span><span class="vk-main">]</span></button>
+                    <button class="vk-key vk-special vk-cr" data-col="0" data-bit="0"><span class="vk-main">CR</span></button>
+                </div>
+
+                <!-- Row 4: SHIFT, ALPHA, Z..M, ,, ., /, ?, SHIFT -->
+                <div class="vk-row vk-row-4">
+                    <button class="vk-key vk-special vk-mod-shift vk-shift-l" data-col="8" data-bit="0"><span class="vk-main">SHIFT</span></button>
+                    <button class="vk-key vk-special vk-mod-alpha" data-col="0" data-bit="4"><span class="vk-main">ALPHA</span></button>
+                    <button class="vk-key" data-col="1" data-bit="6"><span class="vk-main">Z</span></button>
+                    <button class="vk-key" data-col="2" data-bit="0"><span class="vk-main">X</span></button>
+                    <button class="vk-key" data-col="4" data-bit="5"><span class="vk-main">C</span></button>
+                    <button class="vk-key" data-col="2" data-bit="2"><span class="vk-main">V</span></button>
+                    <button class="vk-key" data-col="4" data-bit="6"><span class="vk-main">B</span></button>
+                    <button class="vk-key" data-col="3" data-bit="2"><span class="vk-main">N</span></button>
+                    <button class="vk-key" data-col="3" data-bit="3"><span class="vk-main">M</span></button>
+                    <button class="vk-key" data-col="6" data-bit="1"><span class="vk-sub">&lt;</span><span class="vk-main">,</span></button>
+                    <button class="vk-key" data-col="6" data-bit="0"><span class="vk-sub">&gt;</span><span class="vk-main">.</span></button>
+                    <button class="vk-key" data-col="7" data-bit="0"><span class="vk-sub">←</span><span class="vk-main">/</span></button>
+                    <button class="vk-key" data-col="7" data-bit="1"><span class="vk-sub">→</span><span class="vk-main">?</span></button>
+                    <button class="vk-key vk-special vk-mod-shift vk-shift-r" data-col="8" data-bit="0"><span class="vk-main">SHIFT</span></button>
+                </div>
+
+                <!-- Row 5: SPACE and Cursors -->
+                <div class="vk-row vk-row-5">
+                    <button class="vk-key vk-space" data-col="6" data-bit="4"><span class="vk-main">SPACE</span></button>
+                    <div class="vk-cursor-cluster">
+                        <button class="vk-key vk-cursor" data-col="7" data-bit="2" aria-label="Cursor Left"><span class="vk-main">◀</span></button>
+                        <div class="vk-cursor-col">
+                            <button class="vk-key vk-cursor" data-col="7" data-bit="5" aria-label="Cursor Up"><span class="vk-main">▲</span></button>
+                            <button class="vk-key vk-cursor" data-col="7" data-bit="4" aria-label="Cursor Down"><span class="vk-main">▼</span></button>
+                        </div>
+                        <button class="vk-key vk-cursor" data-col="7" data-bit="3" aria-label="Cursor Right"><span class="vk-main">▶</span></button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Quick Type / Paste Text Modal -->
+        <div id="vkbd-type-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="vkbd-modal-title">
+            <div class="modal-card" style="max-width: 480px;">
+                <div class="modal-header">
+                    <div class="modal-title" id="vkbd-modal-title">
+                        <span>📝</span>
+                        <span>Type or Paste into MZ-800</span>
+                    </div>
+                    <button class="modal-close" id="vkbd-modal-close" aria-label="Close">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <p style="font-size: 13px; color: var(--text-muted);">
+                        Use your mobile or native keyboard to type text, or paste BASIC listings / commands to send directly into the emulator:
+                    </p>
+                    <textarea id="vkbd-type-textarea" rows="5" placeholder="e.g. 10 PRINT &quot;HELLO&quot;&#10;20 GOTO 10&#10;RUN" style="width: 100%; background: #0d0e11; color: #fff; border: 1px solid var(--panel-border); border-radius: 4px; padding: 8px; font-family: monospace; font-size: 13px; resize: vertical; box-sizing: border-box;"></textarea>
+                    <div style="display: flex; align-items: center; justify-content: space-between; font-size: 12.5px; color: var(--text-muted); margin-top: 4px;">
+                        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                            <input type="checkbox" id="vkbd-type-append-cr" checked> Append CR at end
+                        </label>
+                        <span id="vkbd-type-progress" style="display: none; color: var(--accent-blue); font-weight: 600;">Sending...</span>
+                    </div>
+                    <div class="modal-actions" style="margin-top: 10px; justify-content: flex-end;">
+                        <button id="vkbd-type-cancel" class="modal-btn">Cancel</button>
+                        <button id="vkbd-type-send" class="modal-btn modal-btn-primary">Send to MZ-800 ↵</button>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- Scripts -->
