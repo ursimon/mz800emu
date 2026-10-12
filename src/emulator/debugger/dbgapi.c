@@ -54,13 +54,19 @@
 #include "bookmarks/bookmarks.h"
 #include "bp_expr.h"
 #include "mhmap.h"
+#include "freeze/freeze.h"
 #include "png_encode.h"
 #include "trace/eventlog.h"
+#include "trace/eventlog_trigger.h"
+#include "io_history.h"
+#include "io_activity.h"
 #include "trace/cputrack.h"
 #include "trace/iorqlog.h"
 #include "trace/intlog.h"
 #include "trace/hwlog.h"
 #include "snapshot/snapshot.h"
+#include "videorec/videorec.h"
+#include "iface/iface_audio.h"
 #include "symbols/sym_db.h"
 #include "mzarch/mzarch.h"
 #include "mzarch/mzarch_platform.h"
@@ -100,6 +106,7 @@
  * jsou per-arch volitelné přes CFG_HWEXT_HAVE_* makra v mzarch_config.h. */
 #include "hw-generic/cmt/cmt.h"
 #include "hw-generic/cmt/cmthack.h"
+#include "libs/mztape/mztape.h"
 /* fix mzdos 0008: media_load_mzf zrcadlí bootstrap.c plný load (header +
  * post-header mapping + body). Potřebujeme post_header per-arch + MZF
  * header strukturu. */
@@ -120,6 +127,8 @@
 #include "mcp/event_bus.h"
 /* V1.C.1 - HID Tools: VKBD matrix press/release + joystick state. */
 #include "mcp/hid_keymap.h"
+/* mcp-inbox-fixes: sekvence vstupu odměřená snímky emulace. */
+#include "mcp/hid_script.h"
 /* V1.D.1 - Core + CPU extras Resources: čte memext + memory + z80 state. */
 #include "hw-generic/memory/memext.h"
 /* V1.D.4 - Input + Frame Resources: joystick, framebuffer, VRAM read. */
@@ -128,6 +137,20 @@
 #endif
 #include "iface/iface_video.h"
 #include "hw-generic/gdg/framebuffer.h"
+
+/**
+ * @brief Převede délky pulzů (sekundy) na pole µs v pořadí hlavičky CMTSPEED.
+ *
+ * @param pulses Délky pulzů (nesmí být NULL).
+ * @param[out] us Pole 4 hodnot: LONG high, LONG low, SHORT high, SHORT low.
+ */
+static void dbgapi_cmt_pulses_to_us ( const st_MZTAPE_PULSES_LENGTH *pulses, double us[ 4 ] )
+{
+    us[ 0 ] = pulses->long_pulse.high * 1e6;
+    us[ 1 ] = pulses->long_pulse.low * 1e6;
+    us[ 2 ] = pulses->short_pulse.high * 1e6;
+    us[ 3 ] = pulses->short_pulse.low * 1e6;
+}
 #endif
 
 /* V1.B.2 - cfgmain INI handle pro Settings + Periph attach handlery. */
@@ -471,19 +494,30 @@ st_DBGAPI_CMDRQ *dbgapi_emu_dequeue(st_DBGAPI_CMDRQ_QUEUE *queue)
 {
     APP_MUTEX_LOCK(queue->queue_mutex);
 
-    /* Fronta prázdná? */
-    if (!dbgapi_emu_has_pending_unlocked(queue))
+    while (dbgapi_emu_has_pending_unlocked(queue))
     {
+        /* Vyjmout slot z hlavy fronty */
+        st_DBGAPI_CMDRQ *slot = &queue->cmdrq[queue->head];
+        queue->head = (queue->head + 1) % DBGAPI_CMDRQ_QUEUE_SIZE;
+
+        /* Slot zrušený odesílatelem po timeoutu: přeskočit bez provedení.
+         * CANCELLED se nastavuje jen pod queue_mutex (který držíme), takže
+         * čtení je konzistentní. Odesílatel už na slot nečeká ani na něj
+         * nesahá, uvolníme ho tady. */
+        if (slot->cmd_state == DBGAPI_CMDSTATE_CANCELLED)
+        {
+            slot->cmd_state = DBGAPI_CMDSTATE_NONE;
+            continue;
+        };
+
+        /* Od teď ho odesílatel nesmí zrušit - čeká na dokončení. */
+        slot->dequeued = true;
         APP_MUTEX_UNLOCK(queue->queue_mutex);
-        return NULL;
+        return slot;
     };
 
-    /* Vyjmout slot z hlavy fronty */
-    st_DBGAPI_CMDRQ *slot = &queue->cmdrq[queue->head];
-    queue->head = (queue->head + 1) % DBGAPI_CMDRQ_QUEUE_SIZE;
-
     APP_MUTEX_UNLOCK(queue->queue_mutex);
-    return slot;
+    return NULL;
 }
 
 /**
@@ -791,9 +825,42 @@ const char *dbgapi_cmd_to_str(en_DBGAPI_CMD cmd)
         case DBGAPI_CMD_TRACE_RESET:               return "trace_reset";
         case DBGAPI_CMD_TRACE_SAVE:                return "trace_save";
         case DBGAPI_CMD_DEBUGGER_STATE_RECOMPUTE:  return "debugger_state_recompute";
+        /* video-capture Task 15 - video záznam */
+        case DBGAPI_CMD_VIDEOREC:                  return "videorec";
+        /* ui-thread-writes T1 - historie a aktivita I/O */
+        case DBGAPI_CMD_IO_HISTORY_SET_CAPACITY:   return "io_history_set_capacity";
+        case DBGAPI_CMD_IO_HISTORY_CLEAR:          return "io_history_clear";
+        case DBGAPI_CMD_IO_ACTIVITY_RESET:         return "io_activity_reset";
+        /* ui-thread-writes T2 - hromadné operace s breakpointy */
+        case DBGAPI_CMD_BP_CLEAR_ALL:              return "bp_clear_all";
+        case DBGAPI_CMD_BP_LOAD_FILE:              return "bp_load_file";
+        /* ui-thread-writes T3 - Memory Heatmap */
+        case DBGAPI_CMD_MHMAP_RESET_REGION:        return "mhmap_reset_region";
+        case DBGAPI_CMD_MHMAP_MERGE:               return "mhmap_merge";
+        /* ui-thread-writes T4 - Memory Map */
+        case DBGAPI_CMD_MEMMAP_SET:                return "memmap_set";
+        /* ui-thread-writes T5a - Event Viewer */
+        case DBGAPI_CMD_EVENTLOG_SET_MODE:         return "eventlog_set_mode";
+        case DBGAPI_CMD_EVENTLOG_IMPORT_FILE:      return "eventlog_import_file";
+        /* ui-thread-writes T6a - Freeze Bytes */
+        case DBGAPI_CMD_FREEZE_ADD:                return "freeze_add";
+        case DBGAPI_CMD_FREEZE_REMOVE:             return "freeze_remove";
+        /* ui-thread-writes T6b - reset počítadla zásahů BP */
+        case DBGAPI_CMD_BP_RESET_HITS:             return "bp_reset_hits";
+        /* ui-thread-writes T6c - Callstack */
+        case DBGAPI_CMD_CALLSTACK_SET_ACTIVE:      return "callstack_set_active";
+        case DBGAPI_CMD_CALLSTACK_RESET:           return "callstack_reset";
+        /* ui-thread-writes T6d - vynucený refresh obrazovky */
+        case DBGAPI_CMD_SCREEN_REFRESH:            return "screen_refresh";
+        /* ui-thread-writes T1b - reset aktivity jednoho portu */
+        case DBGAPI_CMD_IO_ACTIVITY_RESET_PORT:    return "io_activity_reset_port";
+        /* ui-thread-writes T5c - triggery okna Events */
+        case DBGAPI_CMD_EVENTLOG_TRIGGER_SET:      return "eventlog_trigger_set";
+        case DBGAPI_CMD_EVENTLOG_TRIGGER_CLEAR_MATCHES: return "eventlog_trigger_clear_matches";
         /* V1.B.1 - Media Tools */
         case DBGAPI_CMD_MEDIA_LOAD_MZF:            return "media_load_mzf";
         case DBGAPI_CMD_MEDIA_LOAD_BINARY:         return "media_load_binary";
+        case DBGAPI_CMD_MEDIA_RUN_MZF:             return "media_run_mzf";
         case DBGAPI_CMD_MEDIA_INSERT:              return "media_insert";
         case DBGAPI_CMD_MEDIA_EJECT:               return "media_eject";
         case DBGAPI_CMD_MEDIA_STATE:               return "media_state";
@@ -809,6 +876,8 @@ const char *dbgapi_cmd_to_str(en_DBGAPI_CMD cmd)
         case DBGAPI_CMD_INPUT_RELEASE_ALL:         return "input_release_all";
         case DBGAPI_CMD_INPUT_JOY_SET:             return "input_joy_set";
         case DBGAPI_CMD_INPUT_JOY_CLEAR:           return "input_joy_clear";
+        case DBGAPI_CMD_HID_SCRIPT_START:          return "hid_script_start";
+        case DBGAPI_CMD_HID_SCRIPT_CANCEL:         return "hid_script_cancel";
         /* V1.D.1 - Core + CPU extras Resources */
         case DBGAPI_CMD_GET_CPU_IM2_VECTOR:        return "get_cpu_im2_vector";
         case DBGAPI_CMD_GET_CPU_INTERRUPT_BUS:     return "get_cpu_interrupt_bus";
@@ -1086,6 +1155,232 @@ static void dbgapi_bp_recompute_cb_gating ( void )
 }
 
 
+/* Struktura st_DBGAPI_VIDEOREC_PARAM nese stav a druh události číselně (bez
+ * závislosti na videorec.h); hlídáme, že čísla odpovídají enumům jádra. */
+G_STATIC_ASSERT ( VIDEOREC_STATE_IDLE == 0 && VIDEOREC_STATE_RECORDING == 1 && VIDEOREC_STATE_PAUSED == 2 );
+G_STATIC_ASSERT ( VIDEOREC_EVENT_STARTED == 1 && VIDEOREC_EVENT_SAVED == 2 && VIDEOREC_EVENT_FAILED == 3
+                  && VIDEOREC_EVENT_RETAKE == 4 && VIDEOREC_EVENT_SEAM == 5 );
+G_STATIC_ASSERT ( VIDEOREC_RETAKE_OFF == 0 && VIDEOREC_RETAKE_DISCARD == 1 && VIDEOREC_RETAKE_SEAM == 2 );
+G_STATIC_ASSERT ( sizeof ( ( (st_VIDEOREC_EVENT *) 0 )->path ) == DBGAPI_VIDEOREC_PATH_MAX );
+G_STATIC_ASSERT ( sizeof ( ( (st_VIDEOREC_STATUS *) 0 )->path ) == DBGAPI_VIDEOREC_PATH_MAX );
+G_STATIC_ASSERT ( sizeof ( ( (st_VIDEOREC_EVENT *) 0 )->text ) == DBGAPI_VIDEOREC_TEXT_MAX );
+
+
+/**
+ * @brief Provede operaci DBGAPI_CMD_VIDEOREC a vyplní souhrnný stav (emu vlákno).
+ *
+ * Běží na emu vlákně z dbgapi_emu_dispatch(), tj. mimo hooky modulu videorec
+ * (mezi zpracováním konců snímků). Kontrola "nahrává se?" a následný požadavek
+ * proto nejsou v souběhu se zpracováním požadavků na konci snímku (to dělá
+ * totéž vlákno); souběh je možný jen s UI vláknem (tlačítka nahrávání), který
+ * řeší zámek modulu - nejhůř dojde k chybě "already running" nebo no-op.
+ *
+ * Operace:
+ * - START: st_VIDEOREC_START s cestou, úrovněmi kanálů
+ *   (iface_audio_build_videorec_levels(), stejně jako UI a CLI) a
+ *   `stop_after_frames` = `frames`; `quit_after_stop` = false. Chyba z
+ *   videorec_request_start() (videorec_get_last_error()) jde do out_error.
+ *   videorec_request_start() vytváří cílový AVI soubor **synchronně na emu
+ *   vlákně** (a u prázdné cesty ještě zkouší existenci vygenerovaných jmen
+ *   `_2`, `_3`, ... a případně zakládá výstupní adresář) - emulace tedy po
+ *   dobu těchto souborových operací stojí (jednorázově při startu).
+ * - STOP: bez nahrávání a bez čekajícího startu => NOT_RUNNING; jinak
+ *   videorec_request_stop() (čekající start zruší - out_start_cancelled).
+ * - PAUSE / MARKER: vyžadují stav RECORDING nebo PAUSED, jinak NOT_RUNNING
+ *   (s rozlišením čekajícího startu v textu chyby).
+ * - STATUS: jen stav.
+ * - TIMEBASE: videorec_request_timebase() (0 = emulated, 1 = realtime); funguje
+ *   i bez nahrávání (změní nastavení pro příští start) - vždy OK.
+ *
+ * @param p Parametr (vstupy podle op); výstupy se vždy vyplní.
+ * @return true pokud operace uspěla (out_result == DBGAPI_VIDEOREC_RESULT_OK).
+ *
+ * @par Side effects START vytvoří cílový soubor; marker/pauza/stop zařadí
+ *      požadavek na nejbližší konec snímku (stop v pauze emulace zpracuje
+ *      paused smyčka).
+ */
+static bool dbgapi_videorec_execute ( st_DBGAPI_VIDEOREC_PARAM *p )
+{
+    st_VIDEOREC_STATUS st;
+    videorec_get_status ( &st );
+    bool running = ( st.state != VIDEOREC_STATE_IDLE );
+
+    p->out_result = DBGAPI_VIDEOREC_RESULT_OK;
+    p->out_error[0] = '\0';
+    p->out_label[0] = '\0';
+    p->out_start_cancelled = 0;
+
+    switch ( p->op )
+    {
+        case DBGAPI_VIDEOREC_OP_START:
+        {
+            st_VIDEOREC_START rec;
+            memset ( &rec, 0, sizeof ( rec ) );
+            g_strlcpy ( rec.path, p->path ? p->path : "", sizeof ( rec.path ) );
+            iface_audio_build_videorec_levels ( rec.level, VIDEOREC_AUDIO_MAX_CHANNELS );
+            rec.stop_after_frames = p->frames;
+            rec.quit_after_stop = false;
+            if ( !videorec_request_start ( &rec ) )
+            {
+                p->out_result = DBGAPI_VIDEOREC_RESULT_FAILED;
+                g_strlcpy ( p->out_error, videorec_get_last_error ( ), sizeof ( p->out_error ) );
+            };
+            break;
+        }
+
+        case DBGAPI_VIDEOREC_OP_STOP:
+            if ( !running && !st.start_pending )
+            {
+                p->out_result = DBGAPI_VIDEOREC_RESULT_NOT_RUNNING;
+                g_strlcpy ( p->out_error, "Video recording is not running", sizeof ( p->out_error ) );
+                break;
+            };
+            p->out_start_cancelled = ( !running && st.start_pending ) ? 1 : 0;
+            videorec_request_stop ( );
+            break;
+
+        case DBGAPI_VIDEOREC_OP_PAUSE:
+        case DBGAPI_VIDEOREC_OP_MARKER:
+            if ( !running )
+            {
+                p->out_result = DBGAPI_VIDEOREC_RESULT_NOT_RUNNING;
+                g_strlcpy ( p->out_error,
+                            st.start_pending
+                                ? "Video recording has not started yet: it starts at the end of the next emulated frame (run the emulation first)"
+                                : "Video recording is not running",
+                            sizeof ( p->out_error ) );
+                break;
+            };
+            if ( p->op == DBGAPI_VIDEOREC_OP_PAUSE )
+            {
+                if ( p->paused < 0 )
+                {
+                    videorec_request_pause_toggle ( );
+                }
+                else
+                {
+                    (void) videorec_request_pause_set ( p->paused != 0 );
+                };
+            }
+            else
+            {
+                if ( p->label && p->label[0] != '\0' )
+                {
+                    g_strlcpy ( p->out_label, p->label, sizeof ( p->out_label ) );
+                }
+                else
+                {
+                    /* Výchozí popisek jde do sidecaru (strojově čtený) - anglicky. */
+                    g_snprintf ( p->out_label, sizeof ( p->out_label ), "Marker at frame %" G_GUINT64_FORMAT,
+                                 (guint64) st.frames );
+                };
+                videorec_request_marker ( p->out_label );
+            };
+            break;
+
+        case DBGAPI_VIDEOREC_OP_STATUS:
+            break;
+
+        case DBGAPI_VIDEOREC_OP_TIMEBASE:
+            (void) videorec_request_timebase ( p->timebase ? VIDEOREC_TIMEBASE_REALTIME : VIDEOREC_TIMEBASE_EMULATED );
+            break;
+
+        default:
+            p->out_result = DBGAPI_VIDEOREC_RESULT_FAILED;
+            g_strlcpy ( p->out_error, "Unknown videorec operation", sizeof ( p->out_error ) );
+            break;
+    };
+
+    /* Souhrnný stav po operaci. */
+    videorec_get_status ( &st );
+    p->out_supported = videorec_is_supported ( ) ? 1 : 0;
+    p->out_state = (int) st.state;
+    p->out_start_pending = st.start_pending ? 1 : 0;
+    p->out_frames = st.frames;
+    p->out_fps = videorec_get_fps ( );
+    p->out_segment = st.segment;
+    p->out_segment_open = st.segment_open ? 1 : 0;
+    p->out_bytes = st.bytes;
+    p->out_parts = st.parts;
+    /* Režim retake: běžící (i čekající) session má kopii ze startu, jinak platí nastavení pro příští start. */
+    p->out_retake_mode = ( st.state != VIDEOREC_STATE_IDLE || st.start_pending )
+                             ? (int) st.retake_mode
+                             : (int) g_videorec_settings.retake_mode;
+    g_strlcpy ( p->out_path, st.path, sizeof ( p->out_path ) );
+    g_strlcpy ( p->out_last_error, videorec_get_last_error ( ), sizeof ( p->out_last_error ) );
+    p->out_timebase = (int) st.timebase;
+    p->out_timebase_effective = (int) st.timebase_effective;
+    p->out_rt_activity = (int) st.rt_activity;
+
+    st_VIDEOREC_EVENT ev;
+    uint32_t seq = videorec_get_event_seq ( );
+    if ( seq != 0 && videorec_get_event ( seq, &ev ) )
+    {
+        p->out_event_seq = ev.seq;
+        p->out_event_kind = (int) ev.kind;
+        p->out_event_frame = ev.frame;
+        g_strlcpy ( p->out_event_path, ev.path, sizeof ( p->out_event_path ) );
+        g_strlcpy ( p->out_event_text, ev.text, sizeof ( p->out_event_text ) );
+    }
+    else
+    {
+        p->out_event_seq = 0;
+        p->out_event_kind = 0;
+        p->out_event_frame = 0;
+        p->out_event_path[0] = '\0';
+        p->out_event_text[0] = '\0';
+    };
+
+    return ( p->out_result == DBGAPI_VIDEOREC_RESULT_OK );
+}
+
+
+/**
+ * @brief Testovací háček: doba spánku v ms před dispatchem armovaného
+ *        příkazu (0 = vypnuto). Viz dbgapi_test_arm_dispatch_stall().
+ */
+static gint s_test_stall_ms = 0;
+
+/** @brief Testovací háček: příkaz (en_DBGAPI_CMD), na který háček čeká. */
+static gint s_test_stall_cmd = (gint)DBGAPI_CMD_NONE;
+
+
+void dbgapi_test_arm_dispatch_stall(en_DBGAPI_CMD cmd, int ms)
+{
+    /* Napřed příkaz, potom doba: dispatch háček uplatní až po přečtení
+     * nenulové doby, takže vždy vidí odpovídající příkaz. */
+    g_atomic_int_set(&s_test_stall_cmd, (gint)cmd);
+    g_atomic_int_set(&s_test_stall_ms, ms > 0 ? (gint)ms : 0);
+}
+
+
+/**
+ * @brief Uplatní testovací háček zaseknutí, pokud je armovaný pro @p rq.
+ *
+ * Jednorázový: při shodě příkazu (a originu MCP) háček atomicky vypne
+ * a emu vlákno uspí. V produkci háček nikdo nearmuje, cena je jedno
+ * atomické čtení na příkaz dbgapi (ne na instrukci).
+ *
+ * @param rq  Právě dispatchovaný slot.
+ * @param cmd Příkaz slotu bez BLOCKING flagu.
+ */
+static void dbgapi_test_apply_dispatch_stall(const st_DBGAPI_CMDRQ *rq,
+                                             en_DBGAPI_CMD cmd)
+{
+    gint ms = g_atomic_int_get(&s_test_stall_ms);
+    if (G_LIKELY(ms <= 0))
+        return;
+    if (rq->cmd_origin != DBGAPI_CMD_ORIGIN_MCP
+        || g_atomic_int_get(&s_test_stall_cmd) != (gint)cmd)
+        return;
+    if (!g_atomic_int_compare_and_exchange(&s_test_stall_ms, ms, 0))
+        return;
+    fprintf(stderr, "[dbgapi] test hook: stalling emulator thread for %d ms\n",
+            (int)ms);
+    g_usleep((gulong)ms * 1000);
+}
+
+
 void dbgapi_emu_dispatch(st_DBGAPI_CMDRQ *rq)
 {
     if (!rq)
@@ -1093,6 +1388,9 @@ void dbgapi_emu_dispatch(st_DBGAPI_CMDRQ *rq)
 
     /* Extrahovat příkaz bez BLOCKING flagu */
     en_DBGAPI_CMD cmd = (en_DBGAPI_CMD)(rq->cmd & DBGAPI_CMD_MASK);
+
+    /* Testovací háček (regresní test omezené odpovědi MCP). */
+    dbgapi_test_apply_dispatch_stall(rq, cmd);
 
     /*
      * Dispatch příkazů — zatím základní implementace.
@@ -1123,21 +1421,26 @@ void dbgapi_emu_dispatch(st_DBGAPI_CMDRQ *rq)
             break;
 
         case DBGAPI_CMD_DEBUGGER_ACTIVATE:
-            /* Aktivuje debugger (= nastaví g_debugger.active = 1).
+            /* Aktivuje debugger (= nastaví g_debugger.active = 1) a na emu
+             * vlákně přepočítá CPU callbacky a active flagy trace-suite
+             * (stejně jako DBGAPI_CMD_DEBUGGER_STATE_RECOMPUTE).
              * Side effect: TEST_DEBUGGER_CPUHIST_ACTIVE / MHMAP_ACTIVE
-             * v default WITH_WINDOW režimu se zapne, takže CPU instrukční
-             * historie a memory heatmap začnou zaznamenávat.
-             * Forward na přímou manipulaci globálu (ekvivalent dnešního UI
-             * volání debugger_show_main_window()). */
+             * v režimu WITH_WINDOW se zapne, takže CPU instrukční historie
+             * a memory heatmap začnou zaznamenávat. Bez přepočtu by CPU
+             * zůstalo na rychlých callbackách a záznam by neběžel. Okno
+             * debuggeru se tím neotevírá. */
             g_debugger.active = 1;
+            mzarch_platform_fn_debugger_state_changed ( TEST_DEBUGGER_ACTIVE );
             rq->success = true;
             break;
 
         case DBGAPI_CMD_DEBUGGER_DEACTIVATE:
-            /* Deaktivuje debugger (= g_debugger.active = 0).
+            /* Deaktivuje debugger (= g_debugger.active = 0) a přepočítá
+             * CPU callbacky (jinak by zůstaly pomalé logging callbacky).
              * Side effect: cpuhist a mhmap recording v WITH_WINDOW režimu
-             * se vypne. */
+             * se vypne. Otevřené okno debuggeru se nezavírá. */
             g_debugger.active = 0;
+            mzarch_platform_fn_debugger_state_changed ( TEST_DEBUGGER_ACTIVE );
             rq->success = true;
             break;
 
@@ -1217,7 +1520,15 @@ void dbgapi_emu_dispatch(st_DBGAPI_CMDRQ *rq)
              * porovnání >= v hot loopu; přetečení screens (po cca 2.7 roku
              * běhu při 50 Hz) by teoreticky zkreslilo cíl, ale frame-bounded
              * run je krátkodobá operace (N <= 1000), takže to není praktický
-             * problém. */
+             * problém.
+             *
+             * result_ptr (volitelný, uint32_t*): handler do něj zapíše
+             * výchozí hodnotu screens, od které se cíl počítá. Volající
+             * (MCP run) z ní počítá actual_frames. Výchozí hodnotu nesmí
+             * číst sám na svém vlákně před submitem: za běhu emulace se
+             * mezi jeho čtením a tímto drainem (až po uzavření snímku
+             * a inkrementu screens) dokončí ještě jeden snímek a delta by
+             * vyšla N+1. */
             if ( !rq->data_ptr )
             {
                 rq->success = false;
@@ -1230,9 +1541,13 @@ void dbgapi_emu_dispatch(st_DBGAPI_CMDRQ *rq)
                     rq->success = false;
                     break;
                 };
-                g_debugger.run_frames_target =
-                    g_gdg.total_elapsed.screens + (uint32_t) frames;
+                uint32_t start_screens = (uint32_t) g_gdg.total_elapsed.screens;
+                g_debugger.run_frames_target = start_screens + (uint32_t) frames;
                 g_debugger.run_frames_active = 1;
+                if ( rq->result_ptr )
+                {
+                    *((uint32_t *)rq->result_ptr) = start_screens;
+                };
             }
             emulator_pause ( false );
             rq->success = true;
@@ -1286,7 +1601,12 @@ void dbgapi_emu_dispatch(st_DBGAPI_CMDRQ *rq)
              * cílovou adresu a spustí emulaci přes
              * mzarch_run_to_temporary_breakpoint(). Cílová adresa v
              * data_ptr (= uint16_t*). Pokud emu běží, pause + return
-             * (= UX z dbg_iconbar.cpp::dbg_do_run_to_cursor). */
+             * (= UX z dbg_iconbar.cpp::dbg_do_run_to_cursor).
+             *
+             * result_ptr (volitelný int*, mcp-inbox-fixes): co se stalo -
+             * DBGAPI_RUN_TO_STARTED, nebo DBGAPI_RUN_TO_PAUSED_ONLY (emu
+             * běžel, jen se pauzl). MCP podle něj pozná, že cíl nespustil,
+             * i když emu mezi jeho kontrolou pauzy a drainem někdo rozběhl. */
             if ( !rq->data_ptr )
             {
                 rq->success = false;
@@ -1295,8 +1615,16 @@ void dbgapi_emu_dispatch(st_DBGAPI_CMDRQ *rq)
             if ( !EMULATOR_TEST_PAUSED )
             {
                 emulator_pause ( true );
+                if ( rq->result_ptr )
+                {
+                    *((int *)rq->result_ptr) = DBGAPI_RUN_TO_PAUSED_ONLY;
+                };
                 rq->success = true;
                 break;
+            };
+            if ( rq->result_ptr )
+            {
+                *((int *)rq->result_ptr) = DBGAPI_RUN_TO_STARTED;
             };
             {
                 uint16_t target = *((uint16_t *)rq->data_ptr);
@@ -1575,11 +1903,20 @@ void dbgapi_emu_dispatch(st_DBGAPI_CMDRQ *rq)
                     st_BPT *b = &g_array_index ( g_breakpoints.breakpoints,
                                                  st_BPT, i );
                     r->bp[i].addr = b->addr;
+                    /* Match mode + rozsah/maska: bez nich nebylo z bp_list
+                     * poznat, že BP s addr_end, ale v režimu SINGLE hlídá
+                     * jen addr. */
+                    r->bp[i].addr_end = b->addr_end;
+                    r->bp[i].addr_match_mode = (uint8_t)b->addr_match_mode;
+                    r->bp[i].addr_mask = b->addr_mask;
                     r->bp[i].id = b->id;
                     r->bp[i].enabled = b->enabled;
                     r->bp[i].type = (uint8_t)b->type;
                     r->bp[i].zone = (uint8_t)b->zone;
                     r->bp[i].bank_id = b->bank_id;
+                    r->bp[i].bank_id_end = b->bank_id_end;
+                    r->bp[i].bank_match_mode = (uint8_t)b->bank_match_mode;
+                    r->bp[i].bank_id_mask = b->bank_id_mask;
                     r->bp[i].hits = b->hits;
                     /* expr = condition výraz (NULL = unconditional). g_strdup
                      * - dispatch handler je povinen uvolnit g_free(). */
@@ -3785,6 +4122,347 @@ void dbgapi_emu_dispatch(st_DBGAPI_CMDRQ *rq)
             break;
         }
 
+        /* --- Video záznam (video-capture Task 15) ---
+         * Logika v dbgapi_videorec_execute(); handler jen validuje param. */
+        case DBGAPI_CMD_VIDEOREC:
+        {
+            st_DBGAPI_VIDEOREC_PARAM *p = (st_DBGAPI_VIDEOREC_PARAM *) rq->data_ptr;
+            if ( !p )
+            {
+                rq->success = false;
+                break;
+            };
+            rq->success = dbgapi_videorec_execute ( p );
+            break;
+        }
+
+        /* --- Historie a aktivita I/O (ui-thread-writes T1) ---
+         * Ring io_history a tabulku g_io_activity plní emu vlákno
+         * v port_* / memory_*_with_logging_cb. Mutace z okna I/O Ports
+         * proto běží tady (drain fronty = mezi instrukcemi), ne na UI
+         * vlákně. UI vlákno během příkazu synchronně čeká, takže ring
+         * souběžně nečte. */
+        case DBGAPI_CMD_IO_HISTORY_SET_CAPACITY:
+        {
+            st_DBGAPI_IO_HISTORY_CAPACITY_PARAM *p =
+                (st_DBGAPI_IO_HISTORY_CAPACITY_PARAM *) rq->data_ptr;
+            if ( !p )
+            {
+                rq->success = false;
+                break;
+            };
+            /* Clamp do [MIN..MAX] dělá io_history_set_capacity; ring
+             * realokuje a zahodí dosavadní události. */
+            io_history_set_capacity ( (size_t) p->capacity );
+            if ( g_io_history.events != NULL )
+            {
+                p->capacity_after = (uint32_t) g_io_history.capacity;
+                rq->success = true;
+            }
+            else
+            {
+                /* calloc selhal - ring je bez bufferu; io_history_record
+                 * se ho při dalším záznamu pokusí alokovat s výchozí
+                 * kapacitou (auto-init). */
+                p->capacity_after = 0;
+                rq->success = false;
+            };
+            break;
+        }
+
+        case DBGAPI_CMD_IO_HISTORY_CLEAR:
+            io_history_clear ( );
+            rq->success = true;
+            break;
+
+        case DBGAPI_CMD_IO_ACTIVITY_RESET:
+            io_activity_reset_all ( );
+            rq->success = true;
+            break;
+
+        /* ui-thread-writes T1b - reset aktivity jednoho portu z kontextového
+         * menu okna I/O Ports (8-bit = 256 high-byte slotů, jinak 1 slot). */
+        case DBGAPI_CMD_IO_ACTIVITY_RESET_PORT:
+        {
+            const st_DBGAPI_IO_ACTIVITY_RESET_PORT_PARAM *p =
+                (const st_DBGAPI_IO_ACTIVITY_RESET_PORT_PARAM *) rq->data_ptr;
+            if ( !p )
+            {
+                rq->success = false;
+                break;
+            };
+            if ( p->is_8bit )
+            {
+                io_activity_reset_port_8bit ( (uint8_t) ( p->port & 0xFFu ) );
+            }
+            else
+            {
+                io_activity_reset_port ( p->port );
+            };
+            rq->success = true;
+            break;
+        }
+
+        /* --- Hromadné operace s breakpointy (ui-thread-writes T2) ---
+         * breakpoints_clear_all a breakpoints_load_from_filepath uvolní
+         * stringy a AST BP, zkrátí pole g_breakpoints a vyčistí bptmap;
+         * emu vlákno tato data čte při vyhodnocení BP. Běží proto tady
+         * (drain fronty = mezi instrukcemi), ne na UI vlákně. Po operaci
+         * přepočet gatingu logging callbacků jako u ostatních BP mutací
+         * (přímé volání z UI ho dřív vynechávalo). */
+        case DBGAPI_CMD_BP_CLEAR_ALL:
+            breakpoints_clear_all ( );
+            dbgapi_bp_recompute_cb_gating ( );
+            rq->success = true;
+            break;
+
+        case DBGAPI_CMD_BP_LOAD_FILE:
+        {
+            const st_DBGAPI_BP_LOAD_FILE_PARAM *p =
+                (const st_DBGAPI_BP_LOAD_FILE_PARAM *) rq->data_ptr;
+            if ( !p )
+            {
+                rq->success = false;
+                break;
+            };
+            /* Načtení vždy nejdřív smaže stávající data; neexistující nebo
+             * nečitelný soubor = prázdný stav (sémantika loaderu). */
+            if ( p->filepath && p->filepath[0] )
+            {
+                breakpoints_load_from_filepath ( p->filepath );
+            }
+            else
+            {
+                breakpoints_load_from_file ( );
+            };
+            dbgapi_bp_recompute_cb_gating ( );
+            rq->success = true;
+            break;
+        }
+
+        /* --- Memory Heatmap (ui-thread-writes T3) ---
+         * Countery g_mhmap inkrementuje emu vlákno v logging callbaccích;
+         * reset regionu a Add / Sub importovaných dat proto běží tady
+         * (drain fronty = mezi instrukcemi), ne na UI vlákně. Režim se
+         * nemění, callbacky se nepřepínají. */
+        case DBGAPI_CMD_MHMAP_RESET_REGION:
+        {
+            const st_DBGAPI_MHMAP_RESET_REGION_PARAM *p =
+                (const st_DBGAPI_MHMAP_RESET_REGION_PARAM *) rq->data_ptr;
+            rq->success = ( p != NULL ) && mhmap_reset_region ( p->region_index );
+            break;
+        }
+
+        case DBGAPI_CMD_MHMAP_MERGE:
+        {
+            const st_DBGAPI_MHMAP_MERGE_PARAM *p =
+                (const st_DBGAPI_MHMAP_MERGE_PARAM *) rq->data_ptr;
+            if ( !p || p->src_size != sizeof ( st_MHMAP ) )
+            {
+                rq->success = false;
+                break;
+            };
+            rq->success = mhmap_merge ( (const st_MHMAP *) p->src,
+                                        (en_MHMAP_MERGE_OP) p->op );
+            break;
+        }
+
+        /* --- Memory Map: banking a DMD (ui-thread-writes T4) ---
+         * Okno Memory Map dřív zapisovalo g_memory.map / g_gdg.regDMD
+         * a volalo memory_reconnect_ram() přímo z UI vlákna souběžně
+         * s přístupy CPU do paměti. Pořadí a sémantika viz
+         * st_DBGAPI_MEMMAP_SET_PARAM. */
+        case DBGAPI_CMD_MEMMAP_SET:
+        {
+            st_DBGAPI_MEMMAP_SET_PARAM *p =
+                (st_DBGAPI_MEMMAP_SET_PARAM *) rq->data_ptr;
+            if ( !p )
+            {
+                rq->success = false;
+                break;
+            };
+#if MZARCH != 800
+            /* DMD registr má jen GDG MZ-800. */
+            if ( p->dmd_write )
+            {
+                rq->success = false;
+                break;
+            };
+#endif
+            g_memory.map = (uint8_t) ( ( g_memory.map
+                                         & (uint8_t) ~p->map_clear_mask )
+                                       | p->map_set_mask );
+#if MZARCH == 800
+            if ( p->dmd_write )
+            {
+                /* Stejná cesta jako OUT (CEh) vč. CTC0 GATE0, latche
+                 * MZ-700 a fast-path, ale bez hwlog / HWE BP - viz
+                 * dokumentace parametru. Až po zápisu mapy: fast-path
+                 * rebuild uvnitř čte už novou g_memory.map. */
+                gdg_debug_set_regDMD ( p->dmd_value );
+            };
+#endif
+            /* Přepojení RAM ukazatelů + (MZ-800) přepočet fast-path CPU. */
+            memory_reconnect_ram ( );
+            debugger_screen_refresh_if_enabled ( );
+
+            p->map_after = g_memory.map;
+#if MZARCH == 800
+            p->dmd_after = (uint8_t) g_gdg.regDMD;
+#else
+            p->dmd_after = 0;
+#endif
+            rq->success = true;
+            break;
+        }
+
+        /* --- Event Viewer: režim a import (ui-thread-writes T5a) ---
+         * Okno Events dřív obojí volalo přímo z UI vlákna souběžně
+         * s eventlog_record() (import = free + calloc a fread do ringu,
+         * do kterého emu vlákno zapisuje). Tady běží v drainu fronty,
+         * tedy mezi instrukcemi; UI vlákno během příkazu synchronně čeká. */
+        case DBGAPI_CMD_EVENTLOG_SET_MODE:
+        {
+            st_DBGAPI_EVENTLOG_MODE_PARAM *p =
+                (st_DBGAPI_EVENTLOG_MODE_PARAM *) rq->data_ptr;
+            if ( !p || p->mode > (uint32_t) EVENTLOG_MODE_ALWAYS )
+            {
+                rq->success = false;
+                break;
+            };
+            g_eventlog_config.mode = (en_EVENTLOG_MODE) p->mode;
+            /* Parametr debugger_active eventlog nepoužívá (parita API s tlog). */
+            eventlog_recompute_active ( 0 );
+            p->active_after = g_eventlog_active ? 1u : 0u;
+            rq->success = true;
+            break;
+        }
+
+        case DBGAPI_CMD_EVENTLOG_IMPORT_FILE:
+        {
+            st_DBGAPI_EVENTLOG_IMPORT_PARAM *p =
+                (st_DBGAPI_EVENTLOG_IMPORT_PARAM *) rq->data_ptr;
+            if ( !p || !p->path || !p->path[0] )
+            {
+                rq->success = false;
+                break;
+            };
+            p->rc = (int32_t) eventlog_import_from_file ( p->path );
+            p->count_after = (uint32_t) g_eventlog.count;
+            p->capacity_after = (uint32_t) g_eventlog.capacity;
+            rq->success = ( p->rc == 0 );
+            break;
+        }
+
+        /* --- Triggery okna Events (ui-thread-writes T5c) ---
+         * Filtr triggeru vyhodnocuje callback v eventlog_record() na emu
+         * vlákně. Výměna filtru, jména a gate tady v drainu fronty proto
+         * nikdy nepotká rozběhnuté vyhodnocení; starý filtr dostane zpět
+         * odesílatel a uvolní ho po návratu synchronního submitu. */
+        case DBGAPI_CMD_EVENTLOG_TRIGGER_SET:
+        {
+            st_DBGAPI_EVENTLOG_TRIGGER_PARAM *p =
+                (st_DBGAPI_EVENTLOG_TRIGGER_PARAM *) rq->data_ptr;
+            if ( !p || p->kind >= (uint32_t) EVENTLOG_TRIGGER_COUNT )
+            {
+                rq->success = false;
+                break;
+            };
+            st_EVENTLOG_FILTER *old = NULL;
+            /* Při neúspěchu set nic nezmění a filter zůstává odesílateli. */
+            rq->success = eventlog_trigger_set ( (en_EVENTLOG_TRIGGER_KIND) p->kind,
+                                                 (st_EVENTLOG_FILTER *) p->filter,
+                                                 p->name, &old );
+            if ( rq->success ) p->old_filter = old;
+            break;
+        }
+
+        case DBGAPI_CMD_EVENTLOG_TRIGGER_CLEAR_MATCHES:
+        {
+            const uint32_t *kind = (const uint32_t *) rq->data_ptr;
+            rq->success = ( kind != NULL )
+                          && *kind < (uint32_t) EVENTLOG_TRIGGER_COUNT
+                          && eventlog_trigger_clear_matches ( (en_EVENTLOG_TRIGGER_KIND) *kind );
+            break;
+        }
+
+        /* --- Freeze Bytes (ui-thread-writes T6a) ---
+         * Tabulku čte freeze_apply_all() na emu vlákně jednou za snímek.
+         * Memory Browser ji dřív měnil přímo z UI vlákna (bez synchronizace
+         * zápisu polí slotu a in_use); tady běží v drainu fronty. */
+        case DBGAPI_CMD_FREEZE_ADD:
+        case DBGAPI_CMD_FREEZE_REMOVE:
+        {
+            st_DBGAPI_FREEZE_PARAM *p = (st_DBGAPI_FREEZE_PARAM *) rq->data_ptr;
+            if ( !p )
+            {
+                rq->success = false;
+                break;
+            };
+            if ( ( rq->cmd & DBGAPI_CMD_MASK ) == DBGAPI_CMD_FREEZE_ADD )
+            {
+                p->result = freeze_add ( p->region_kind, p->sub_id,
+                                         p->offset, p->value );
+            }
+            else
+            {
+                p->result = freeze_remove ( p->region_kind, p->sub_id,
+                                            p->offset );
+            };
+            rq->success = p->result;
+            break;
+        }
+
+        /* --- Reset počítadla zásahů BP (ui-thread-writes T6b) ---
+         * hits++ a test hit_count dělá emu vlákno při vyhodnocení BP;
+         * reset z editačního panelu proto běží tady (drain fronty = mezi
+         * instrukcemi). Neexistující ID = neúspěch. */
+        case DBGAPI_CMD_BP_RESET_HITS:
+        {
+            const int *p_id = (const int *) rq->data_ptr;
+            if ( !p_id || !breakpoints_find_by_id ( *p_id ) )
+            {
+                rq->success = false;
+                break;
+            };
+            breakpoints_reset_hits ( *p_id );
+            rq->success = true;
+            break;
+        }
+
+        /* --- Callstack (ui-thread-writes T6c) ---
+         * Shadow stack mění emu vlákno v CALL/RET hoocích; zapnutí /
+         * vypnutí (registrace Z80 hooků) i vyprázdnění proto běží tady
+         * (drain fronty = mezi instrukcemi), ne na UI vlákně. */
+        case DBGAPI_CMD_CALLSTACK_SET_ACTIVE:
+        {
+            st_DBGAPI_CALLSTACK_SET_ACTIVE_PARAM *p =
+                (st_DBGAPI_CALLSTACK_SET_ACTIVE_PARAM *) rq->data_ptr;
+            if ( !p )
+            {
+                rq->success = false;
+                break;
+            };
+            callstack_set_active ( p->active != 0 );
+            p->active_after = g_callstack_active ? 1u : 0u;
+            rq->success = true;
+            break;
+        }
+
+        case DBGAPI_CMD_CALLSTACK_RESET:
+            callstack_reset ( );
+            rq->success = true;
+            break;
+
+        /* --- Vynucený refresh obrazovky (ui-thread-writes T6d) ---
+         * Framebuffer plní a snímky dokončuje emu vlákno; Ctrl+R / menu
+         * debuggeru proto refresh posílají sem (drain fronty = mezi
+         * instrukcemi, v pauze hned). */
+        case DBGAPI_CMD_SCREEN_REFRESH:
+            mzarch_forced_full_screen_refresh ( );
+            rq->success = true;
+            break;
+
         /* --- Media Tools (mutant mcp-server V1.B.1) --- */
         case DBGAPI_CMD_MEDIA_LOAD_MZF:
         {
@@ -3796,7 +4474,8 @@ void dbgapi_emu_dispatch(st_DBGAPI_CMDRQ *rq)
              *     8255/CTC/PIO). media_load_mzf je load mid-session, ne boot.
              *   - NEnastaví SP (= bootstrap to dělá jako run-prep, my jsme
              *     load-only).
-             *   - NEnastaví PC (= práce composite emu_media_run_mzf / caller).
+             *   - NEnastaví PC (= práce volajícího; spuštění v definovaném
+             *     stavu dělá DBGAPI_CMD_MEDIA_RUN_MZF).
              *
              * Mapping: na MZ-800 je po resetu header buffer 0x10F0 mapovaný
              * na CG-ROM (= ROM_1000), takže nejdřív uložíme g_memory.map a
@@ -3901,6 +4580,89 @@ void dbgapi_emu_dispatch(st_DBGAPI_CMDRQ *rq)
             p->out_size = mzf_header.fsize;
 
             if ( body_failed )
+            {
+                p->out_result = -3;
+                rq->success = false;
+                break;
+            };
+
+            p->out_result = 0;
+            rq->success = true;
+            break;
+        }
+
+        case DBGAPI_CMD_MEDIA_RUN_MZF:
+        {
+            /* Spuštění MZF v definovaném stavu: reset stroje + bootstrap
+             * jako CLI --run-mzf (mzarch_main_reset_and_run_mzf). Na rozdíl
+             * od MEDIA_LOAD_MZF výsledek nezávisí na předchozím stavu stroje
+             * (Z80 PIO, IM, paleta, CTC, ...).
+             *
+             * Soubor se ověří PŘED resetem (čitelná hlavička, tělo
+             * o délce fsize za ní), aby chybná cesta nebo zkrácený soubor
+             * nezresetovaly běžící program. Kódy out_result jako LOAD_MZF,
+             * navíc -4 = soubor kratší než 128 + fsize (zjištěno před
+             * resetem). -3 zde znamená selhání CMT hacku až po resetu.
+             *
+             * Reset v drainu fronty je stejná situace jako načtení snapshotu
+             * (SNAPSHOT_LOAD_*): celý stav stroje se nahradí mezi
+             * instrukcemi. */
+            st_DBGAPI_MEDIA_PARAM *p =
+                (st_DBGAPI_MEDIA_PARAM *) rq->data_ptr;
+            if ( !p || !p->filepath || p->filepath[0] == '\0' )
+            {
+                if ( p )
+                {
+                    p->out_result = -1;
+                    p->out_size = 0;
+                };
+                rq->success = false;
+                break;
+            };
+
+            /* Hlavička a délka souboru. Pole hlavičky jsou little-endian. */
+            uint8_t raw_hdr[sizeof ( st_MZF_HEADER )];
+            bool hdr_ok = false;
+            gint64 file_len = -1;
+            FILE *fp = g_fopen ( p->filepath, "rb" );
+            if ( fp )
+            {
+                hdr_ok = ( fread ( raw_hdr, 1, sizeof ( raw_hdr ), fp )
+                           == sizeof ( raw_hdr ) );
+                if ( fseek ( fp, 0, SEEK_END ) == 0 )
+                {
+                    file_len = (gint64) ftell ( fp );
+                };
+                fclose ( fp );
+            };
+            if ( !hdr_ok )
+            {
+                p->out_result = -2;
+                p->out_size = 0;
+                rq->success = false;
+                break;
+            };
+            uint16_t fsize = (uint16_t) ( raw_hdr[offsetof ( st_MZF_HEADER, fsize )]
+                             | ( raw_hdr[offsetof ( st_MZF_HEADER, fsize ) + 1] << 8 ) );
+            uint16_t fstrt = (uint16_t) ( raw_hdr[offsetof ( st_MZF_HEADER, fstrt )]
+                             | ( raw_hdr[offsetof ( st_MZF_HEADER, fstrt ) + 1] << 8 ) );
+            uint16_t fexec = (uint16_t) ( raw_hdr[offsetof ( st_MZF_HEADER, fexec )]
+                             | ( raw_hdr[offsetof ( st_MZF_HEADER, fexec ) + 1] << 8 ) );
+            p->out_load_addr = fstrt;
+            p->out_exec_addr = fexec;
+            p->out_size = fsize;
+            if ( file_len < (gint64) ( sizeof ( st_MZF_HEADER ) + fsize ) )
+            {
+                p->out_result = -4;
+                rq->success = false;
+                break;
+            };
+
+            mzarch_main_reset_and_run_mzf ( p->filepath );
+
+            /* CARRY v AF = selhání CMT hacku (cmthack_result). Bootstrap po
+             * načtení těla AF nemění. */
+            if ( z80_get_reg ( g_mzarch_main.cpu, Z80_REG_AF ) & 0x01 )
             {
                 p->out_result = -3;
                 rq->success = false;
@@ -4639,6 +5401,28 @@ void dbgapi_emu_dispatch(st_DBGAPI_CMDRQ *rq)
                 break;
             };
             rq->success = hid_keymap_joystick_clear ( p->port );
+            break;
+        }
+
+        case DBGAPI_CMD_HID_SCRIPT_START:
+        {
+            /* Sekvence vstupu odměřená snímky emulace (mcp-inbox-fixes).
+             * hid_script_start() provede první stisk a sekvenci si
+             * zapamatuje; další kroky dělá per-frame bod hlavní smyčky
+             * (hid_script_on_frame). Byla-li emulace v pauze, rozběhne ji
+             * a po poslední události se emu sám pauzne na hranici snímku.
+             * success=false = neplatná sekvence nebo už běží jiná. */
+            rq->success = hid_script_start (
+                (st_DBGAPI_HID_SCRIPT *) rq->data_ptr );
+            break;
+        }
+
+        case DBGAPI_CMD_HID_SCRIPT_CANCEL:
+        {
+            /* Zrušení sekvence (uvolní drženou klávesu / joystick). Funguje
+             * i v pauze - paused smyčka frontu dbgapi také vybírá. */
+            rq->success = hid_script_cancel (
+                (st_DBGAPI_HID_SCRIPT *) rq->data_ptr );
             break;
         }
 
@@ -5554,6 +6338,11 @@ void dbgapi_emu_dispatch(st_DBGAPI_CMDRQ *rq)
                 memcpy ( p->image_basename, base, blen );
                 p->image_basename[ blen ] = '\0';
             };
+            /* délky pulzů: efektivní výchozí rychlosti a uložené vlastní */
+            st_MZTAPE_PULSES_LENGTH dflt;
+            if ( EXIT_SUCCESS == cmt_get_speed_pulses ( g_cmt.mz_cmtspeed, &g_cmt.mz_custom_pulses, &dflt ) )
+                dbgapi_cmt_pulses_to_us ( &dflt, p->default_pulses_us );
+            dbgapi_cmt_pulses_to_us ( &g_cmt.mz_custom_pulses, p->custom_pulses_us );
             rq->success = true;
             break;
         }
@@ -6390,7 +7179,9 @@ void dbgapi_emu_dispatch(st_DBGAPI_CMDRQ *rq)
             /* CMT-A: ovládání transportu reálné páskové emulace.
              * Transport funkce (cmt_play/stop/pause/eject) běží na emu
              * vlákně a samy validují stav (= no-op pokud nelze provést).
-             * Proto out_result = 0 a success = true i pro no-op. */
+             * Proto out_result = 0 a success = true i pro no-op.
+             * stop/eject bez vložené pásky nejsou no-op: uvedou transport
+             * do STOP (invariant st_CMT), takže success odpovídá stavu. */
             st_DBGAPI_CMT_TRANSPORT_PARAM *p =
                 (st_DBGAPI_CMT_TRANSPORT_PARAM *) rq->data_ptr;
             if ( !p )
@@ -6489,7 +7280,9 @@ void dbgapi_emu_dispatch(st_DBGAPI_CMDRQ *rq)
             switch ( p->property )
             {
                 case DBGAPI_CMT_PROP_SPEED:
-                    if ( !cmtspeed_is_valid ( (en_CMTSPEED) p->value ) )
+                    /* poměr, nebo CMTSPEED_CUSTOM = uložené vlastní pulzy */
+                    if ( ( !cmtspeed_is_valid ( (en_CMTSPEED) p->value ) )
+                         && ( !cmtspeed_is_custom ( (en_CMTSPEED) p->value ) ) )
                     {
                         p->out_result = -1;
                         rq->success = false;
@@ -6500,6 +7293,22 @@ void dbgapi_emu_dispatch(st_DBGAPI_CMDRQ *rq)
                         rq->success = true;
                     };
                     break;
+                case DBGAPI_CMT_PROP_CUSTOM_PULSES:
+                {
+                    st_MZTAPE_PULSES_LENGTH pulses;
+                    if ( ( EXIT_SUCCESS != mztape_pulses_set_us ( &pulses, p->pulses_us[ 0 ], p->pulses_us[ 1 ],
+                                                                   p->pulses_us[ 2 ], p->pulses_us[ 3 ] ) )
+                         || ( EXIT_SUCCESS != cmt_change_custom_pulses ( &pulses ) ) )
+                    {
+                        p->out_result = -1;
+                        rq->success = false;
+                    }
+                    else
+                    {
+                        rq->success = true;
+                    };
+                    break;
+                }
                 case DBGAPI_CMT_PROP_POLARITY:
                     cmt_rear_dip_switch_cmt_inverted_polarity ( p->value ? 1u : 0u );
                     rq->success = true;
@@ -6527,7 +7336,8 @@ void dbgapi_emu_dispatch(st_DBGAPI_CMDRQ *rq)
             /* CMT-B: otevření CMT souboru (non-UI). cmt_open_file_by_
              * extension udělá eject + open; při play_immediately handler
              * navíc zavolá cmt_play (= jako cmt_ui_open_cb). Selhání
-             * openu -> out_result = -2, success = false. */
+             * openu -> out_result = -2, success = false. Vždy vyplní
+             * out_state / out_paused podle skutečného stavu. */
             st_DBGAPI_CMT_OPEN_PARAM *p =
                 (st_DBGAPI_CMT_OPEN_PARAM *) rq->data_ptr;
             if ( !p || !p->filepath || p->filepath[ 0 ] == '\0' )
@@ -6550,6 +7360,10 @@ void dbgapi_emu_dispatch(st_DBGAPI_CMDRQ *rq)
                 p->out_result = -2;
                 rq->success = false;
             };
+            /* Skutečný stav transportu po operaci - dispatch z něj hlásí
+             * "playing" (dříve jen echo play_immediately). */
+            p->out_state = (uint8_t) g_cmt.state;
+            p->out_paused = (uint8_t) ( g_cmt.paused ? 1 : 0 );
             break;
         }
 
@@ -6598,42 +7412,25 @@ void dbgapi_emu_dispatch(st_DBGAPI_CMDRQ *rq)
                 rq->success = false;
                 break;
             };
-            if ( ( !CMT_TEST_FILLED ) || ( !g_cmt.ext ) )
+            /* Validace (páska, SIMPLE_TAPE, rozsah, rychlost) a nastavení
+             * blspeed = SET + cmtspeed dělá cmt_tape_set_block_cmt_speed()
+             * (-1 = páska/blok, -2 = neplatná rychlost). */
+            if ( p->use_pulses )
             {
-                p->out_result = -1;
-                rq->success = false;
-                break;
-            };
-            if ( !cmtspeed_is_valid ( (en_CMTSPEED) p->cmtspeed ) )
+                /* vlastní délky pulzů: blok dostane CMTSPEED_CUSTOM */
+                st_MZTAPE_PULSES_LENGTH pulses;
+                if ( EXIT_SUCCESS != mztape_pulses_set_us ( &pulses, p->pulses_us[ 0 ], p->pulses_us[ 1 ],
+                                                            p->pulses_us[ 2 ], p->pulses_us[ 3 ] ) )
+                    p->out_result = -2;
+                else
+                    p->out_result = cmt_tape_set_block_pulses ( p->block_id, &pulses );
+            }
+            else
             {
-                p->out_result = -2;
-                rq->success = false;
-                break;
+                p->out_result = cmt_tape_set_block_cmt_speed ( p->block_id,
+                                                               (en_CMTSPEED) p->cmtspeed );
             };
-            st_CMTEXT_CONTAINER *container = cmtext_get_container ( g_cmt.ext );
-            if ( !container )
-            {
-                p->out_result = -1;
-                rq->success = false;
-                break;
-            };
-            /* Per-blok speed má smysl jen pro SIMPLE_TAPE (= má tape
-             * index). SINGLE container nemá per-blok data; set funkce by
-             * dereferencovala NULL container->tape. Také kontrolujeme
-             * rozsah block_id (= set funkce má jen assert). */
-            if ( ( cmtext_container_get_type ( container )
-                   != CMTEXT_CONTAINER_TYPE_SIMPLE_TAPE )
-                 || ( p->block_id < 0 )
-                 || ( p->block_id >= cmtext_container_get_count_blocks ( container ) ) )
-            {
-                p->out_result = -1;
-                rq->success = false;
-                break;
-            };
-            cmtext_container_set_block_cmt_speed ( container, p->block_id,
-                                                   (en_CMTSPEED) p->cmtspeed );
-            p->out_result = 0;
-            rq->success = true;
+            rq->success = ( p->out_result == 0 );
             break;
         }
 
@@ -6672,8 +7469,11 @@ void dbgapi_emu_dispatch(st_DBGAPI_CMDRQ *rq)
             p->container_type = (uint8_t) ctype;
             if ( g_cmt.ext->block )
                 p->current_block = cmtext_block_get_block_id ( g_cmt.ext->block );
-            int playable   = cmtext_is_playable ( g_cmt.ext );
-            int recordable = cmtext_is_recordable ( g_cmt.ext );
+            /* cmtext_is_playable/recordable vracejí EXIT_SUCCESS (0)
+             * pro "ano" - převod na bool (dříve obráceně: MZF hlásilo
+             * playable = false, recordable = true). */
+            bool playable   = ( EXIT_SUCCESS == cmtext_is_playable ( g_cmt.ext ) );
+            bool recordable = ( EXIT_SUCCESS == cmtext_is_recordable ( g_cmt.ext ) );
 
             if ( ctype != CMTEXT_CONTAINER_TYPE_SIMPLE_TAPE )
             {
@@ -6687,6 +7487,11 @@ void dbgapi_emu_dispatch(st_DBGAPI_CMDRQ *rq)
                     e->block_id   = 0;
                     e->cmtspeed   = (int) g_cmt.mz_cmtspeed;
                     e->type       = (uint8_t) CMTEXT_BLOCK_TYPE_MZF;
+                    e->block_speed = (uint8_t) cmtext_block_get_block_speed ( g_cmt.ext->block );
+                    st_MZTAPE_PULSES_LENGTH pulses;
+                    e->has_pulses = (uint8_t)( 0 == cmt_tape_get_block_pulses ( 0, &pulses ) ? 1 : 0 );
+                    if ( e->has_pulses )
+                        dbgapi_cmt_pulses_to_us ( &pulses, e->pulses_us );
                     e->is_current = (uint8_t)( p->current_block == 0 ? 1 : 0 );
                     e->playable   = (uint8_t)( playable ? 1 : 0 );
                     e->recordable = (uint8_t)( recordable ? 1 : 0 );
@@ -6711,6 +7516,11 @@ void dbgapi_emu_dispatch(st_DBGAPI_CMDRQ *rq)
                 e->block_id   = i;
                 e->cmtspeed   = (int) cmtext_container_get_block_cmt_speed ( container, i );
                 e->type       = (uint8_t) cmtext_container_get_block_type ( container, i );
+                e->block_speed = (uint8_t) cmtext_container_get_block_speed ( container, i );
+                st_MZTAPE_PULSES_LENGTH pulses;
+                e->has_pulses = (uint8_t)( 0 == cmt_tape_get_block_pulses ( i, &pulses ) ? 1 : 0 );
+                if ( e->has_pulses )
+                    dbgapi_cmt_pulses_to_us ( &pulses, e->pulses_us );
                 e->is_current = (uint8_t)( i == p->current_block ? 1 : 0 );
                 e->playable   = (uint8_t)( playable ? 1 : 0 );
                 e->recordable = (uint8_t)( recordable ? 1 : 0 );
@@ -6819,19 +7629,39 @@ void dbgapi_emu_send_msg(en_DBGAPI_MSG msg, st_DBGAPI_MSG_DATA *data)
  * UI STRANA — ODESÍLÁNÍ CMDRQ (UI → EMU)
  * ============================================================================ */
 
-bool dbgapi_ui_submit_cmd_sync_with_origin(st_DBGAPI_CMDRQ_QUEUE *queue,
-                                            en_DBGAPI_CMD cmd,
-                                            en_DBGAPI_CMD_ORIGIN origin,
-                                            void *data_ptr,
-                                            void *result_ptr,
-                                            int timeout_ms)
+/**
+ * @brief Společná implementace synchronního submitu (viz
+ *        dbgapi_ui_submit_cmd_sync_watched() a dbgapi_ui_submit_cmd_sync_ex()).
+ *
+ * @param queue           CMDRQ fronta.
+ * @param cmd             Příkaz (volitelně s DBGAPI_CMDFLAG_BLOCKING).
+ * @param origin          Zdroj příkazu.
+ * @param data_ptr        Vstupní data (vlastní volající, platná do návratu).
+ * @param result_ptr      Buffer odpovědi (vlastní volající, platný do návratu).
+ * @param timeout_ms      Limit čekání na vyzvednutí emu vláknem (0 = bez limitu).
+ * @param stall_ms        Dodatečná doba čekání na dokončení vyzvednutého
+ *                        příkazu, po které se zavolá @p stall_cb.
+ * @param stall_cb        Hlášení zaseknutého rozpracovaného příkazu (NULL =
+ *                        nehlásit, čistá sémantika _ex).
+ * @param stall_user_data Kontext pro @p stall_cb.
+ * @return Viz en_DBGAPI_SUBMIT_STATUS.
+ */
+static en_DBGAPI_SUBMIT_STATUS dbgapi_ui_submit_impl(st_DBGAPI_CMDRQ_QUEUE *queue,
+                                                     en_DBGAPI_CMD cmd,
+                                                     en_DBGAPI_CMD_ORIGIN origin,
+                                                     void *data_ptr,
+                                                     void *result_ptr,
+                                                     int timeout_ms,
+                                                     int stall_ms,
+                                                     dbgapi_submit_stall_cb_t stall_cb,
+                                                     void *stall_user_data)
 {
     /* Kontrola: emulátor se neukončuje? */
     APP_MUTEX_LOCK(queue->queue_mutex);
     if (queue->reply_state == DBGAPI_CMDREPLY_STATE_ENDING)
     {
         APP_MUTEX_UNLOCK(queue->queue_mutex);
-        return false;
+        return DBGAPI_SUBMIT_ENDING;
     };
 
     /* Kontrola: fronta není plná? Když emu vlákno blokuje (např. CMT
@@ -6848,21 +7678,34 @@ bool dbgapi_ui_submit_cmd_sync_with_origin(st_DBGAPI_CMDRQ_QUEUE *queue,
     {
         APP_MUTEX_UNLOCK(queue->queue_mutex);
         g_debug("dbgapi: CMDRQ queue is full, command dropped");
-        return false;
+        return DBGAPI_SUBMIT_QUEUE_FULL;
     };
 
-    /* Vložit příkaz do slotu na pozici tail */
+    /* Slot na pozici tail. Pořadí zámků queue_mutex -> slot->mutex. */
     st_DBGAPI_CMDRQ *slot = &queue->cmdrq[queue->tail];
+    APP_MUTEX_LOCK(slot->mutex);
+
+    /* Slot může být ještě obsazený předchozím odesílatelem, který čeká na
+     * dokončení rozpracovaného příkazu (emu ho vyzvedlo, head je za ním,
+     * ale fronta mezitím obešla celé kolo). Přepsat ho nesmíme - chová se
+     * to jako plná fronta. */
+    if (slot->cmd_state != DBGAPI_CMDSTATE_NONE)
+    {
+        APP_MUTEX_UNLOCK(slot->mutex);
+        APP_MUTEX_UNLOCK(queue->queue_mutex);
+        g_debug("dbgapi: CMDRQ slot still owned, command dropped");
+        return DBGAPI_SUBMIT_QUEUE_FULL;
+    };
     queue->tail = next_tail;
 
     /* Inicializace slotu */
-    APP_MUTEX_LOCK(slot->mutex);
     slot->cmd = cmd;
     slot->cmd_origin = origin;
     slot->cmd_state = DBGAPI_CMDSTATE_PENDING;
     slot->data_ptr = data_ptr;
     slot->result_ptr = result_ptr;
     slot->success = false;
+    slot->dequeued = false;
 
     /* V1.D.1 - track last user action pro emulator://state Resource.
      * Zaznamenáváme jen origin == USER (= GUI klik / hotkey / menu).
@@ -6877,20 +7720,88 @@ bool dbgapi_ui_submit_cmd_sync_with_origin(st_DBGAPI_CMDRQ_QUEUE *queue,
     APP_COND_SIGNAL(queue->queue_cond);
     APP_MUTEX_UNLOCK(queue->queue_mutex);
 
-    /* Čekat na zpracování příkazu emulátorem */
+    /* Čekat na zpracování příkazu emulátorem. Vždy ve smyčce nad stavem
+     * slotu - podmínková proměnná se smí probudit i bez signálu. */
     if (timeout_ms > 0)
     {
-        /* Čekání s timeoutem */
-        APP_COND_WAIT_TIMEOUT_MS(slot->cond, slot->mutex, timeout_ms);
+        gint64 deadline_us = g_get_monotonic_time() + (gint64)timeout_ms * 1000;
+        while (slot->cmd_state != DBGAPI_CMDSTATE_PROCESSED)
+        {
+            gint64 left_us = deadline_us - g_get_monotonic_time();
+            if (left_us <= 0)
+                break;
+            gint32 left_ms = (gint32)((left_us + 999) / 1000);
+            APP_COND_WAIT_TIMEOUT_MS(slot->cond, slot->mutex, left_ms);
+        };
     }
     else
     {
         /* Neomezené čekání */
-        APP_COND_WAIT(slot->cond, slot->mutex);
+        while (slot->cmd_state != DBGAPI_CMDSTATE_PROCESSED)
+            APP_COND_WAIT(slot->cond, slot->mutex);
+    };
+
+    if (slot->cmd_state != DBGAPI_CMDSTATE_PROCESSED)
+    {
+        /* Timeout. O zrušení se rozhoduje pod queue_mutex (tam emu nastavuje
+         * `dequeued`); kvůli pořadí zámků queue -> slot nejdřív pustíme slot. */
+        APP_MUTEX_UNLOCK(slot->mutex);
+        APP_MUTEX_LOCK(queue->queue_mutex);
+        APP_MUTEX_LOCK(slot->mutex);
+
+        if (!slot->dequeued && slot->cmd_state == DBGAPI_CMDSTATE_PENDING)
+        {
+            /* Emu slot ještě nevyzvedlo: zrušit. Emu ho přeskočí a uvolní
+             * (dbgapi_emu_dequeue), data klienta už nikdo nečte. */
+            slot->cmd_state = DBGAPI_CMDSTATE_CANCELLED;
+            slot->cmd = DBGAPI_CMD_NONE;
+            slot->cmd_origin = DBGAPI_CMD_ORIGIN_USER;
+            slot->data_ptr = NULL;
+            slot->result_ptr = NULL;
+            APP_MUTEX_UNLOCK(slot->mutex);
+            APP_MUTEX_UNLOCK(queue->queue_mutex);
+            return DBGAPI_SUBMIT_TIMEOUT;
+        };
+        APP_MUTEX_UNLOCK(queue->queue_mutex);
+
+        /* Emu příkaz právě zpracovává (nebo ho mezitím dokončilo). Slot
+         * nesmíme opustit - emu pracuje s data_ptr/result_ptr klienta,
+         * která typicky leží na zásobníku odesílatele. Proto se tu čeká
+         * vždy až do dokončení; handlery dispatch na odesílatele nečekají.
+         *
+         * Volající, který potřebuje omezenou dobu odpovědi (MCP), si nechá
+         * po dalších stall_ms ohlásit zaseknutí přes stall_cb. Odpověď
+         * klientovi pak pošle jiné vlákno, toto vlákno (a s ním i data
+         * na jeho zásobníku) dál čeká na dokončení slotu. */
+        if (stall_cb && slot->cmd_state != DBGAPI_CMDSTATE_PROCESSED)
+        {
+            gint64 stall_deadline_us = g_get_monotonic_time()
+                                       + (gint64)(stall_ms > 0 ? stall_ms : 0) * 1000;
+            while (slot->cmd_state != DBGAPI_CMDSTATE_PROCESSED)
+            {
+                gint64 left_us = stall_deadline_us - g_get_monotonic_time();
+                if (left_us <= 0)
+                    break;
+                gint32 left_ms = (gint32)((left_us + 999) / 1000);
+                APP_COND_WAIT_TIMEOUT_MS(slot->cond, slot->mutex, left_ms);
+            };
+            if (slot->cmd_state != DBGAPI_CMDSTATE_PROCESSED)
+            {
+                /* Slot zůstává náš (cmd_state != NONE), nikdo jiný ho
+                 * nepřevezme; zámek pouštíme jen kvůli callbacku, aby
+                 * nemohl vzniknout lock-order problém se zámky volajícího. */
+                APP_MUTEX_UNLOCK(slot->mutex);
+                stall_cb(stall_user_data);
+                APP_MUTEX_LOCK(slot->mutex);
+            };
+        };
+        while (slot->cmd_state != DBGAPI_CMDSTATE_PROCESSED)
+            APP_COND_WAIT(slot->cond, slot->mutex);
     };
 
     /* Přečíst výsledek */
-    bool success = (slot->cmd_state == DBGAPI_CMDSTATE_PROCESSED) && slot->success;
+    en_DBGAPI_SUBMIT_STATUS status = slot->success ? DBGAPI_SUBMIT_OK
+                                                   : DBGAPI_SUBMIT_FAILED;
 
     /* Uvolnit slot */
     slot->cmd_state = DBGAPI_CMDSTATE_NONE;
@@ -6901,7 +7812,48 @@ bool dbgapi_ui_submit_cmd_sync_with_origin(st_DBGAPI_CMDRQ_QUEUE *queue,
 
     APP_MUTEX_UNLOCK(slot->mutex);
 
-    return success;
+    return status;
+}
+
+
+en_DBGAPI_SUBMIT_STATUS dbgapi_ui_submit_cmd_sync_ex(st_DBGAPI_CMDRQ_QUEUE *queue,
+                                                     en_DBGAPI_CMD cmd,
+                                                     en_DBGAPI_CMD_ORIGIN origin,
+                                                     void *data_ptr,
+                                                     void *result_ptr,
+                                                     int timeout_ms)
+{
+    return dbgapi_ui_submit_impl(queue, cmd, origin, data_ptr, result_ptr,
+                                 timeout_ms, 0, NULL, NULL);
+}
+
+
+en_DBGAPI_SUBMIT_STATUS dbgapi_ui_submit_cmd_sync_watched(st_DBGAPI_CMDRQ_QUEUE *queue,
+                                                          en_DBGAPI_CMD cmd,
+                                                          en_DBGAPI_CMD_ORIGIN origin,
+                                                          void *data_ptr,
+                                                          void *result_ptr,
+                                                          int timeout_ms,
+                                                          int stall_ms,
+                                                          dbgapi_submit_stall_cb_t stall_cb,
+                                                          void *stall_user_data)
+{
+    return dbgapi_ui_submit_impl(queue, cmd, origin, data_ptr, result_ptr,
+                                 timeout_ms, stall_ms, stall_cb,
+                                 stall_user_data);
+}
+
+
+bool dbgapi_ui_submit_cmd_sync_with_origin(st_DBGAPI_CMDRQ_QUEUE *queue,
+                                            en_DBGAPI_CMD cmd,
+                                            en_DBGAPI_CMD_ORIGIN origin,
+                                            void *data_ptr,
+                                            void *result_ptr,
+                                            int timeout_ms)
+{
+    return dbgapi_ui_submit_cmd_sync_ex(queue, cmd, origin, data_ptr,
+                                        result_ptr, timeout_ms)
+           == DBGAPI_SUBMIT_OK;
 }
 
 

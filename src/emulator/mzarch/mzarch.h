@@ -12,11 +12,22 @@
 #include "hw-generic/gdg/gdg.h"
 #include "mzarch/mzevent.h"
 
-typedef enum en_SWITCH700
+/**
+ * @brief Poloha zadního přepínače SW1 MZ-800 (volba MZ-700 / MZ-800 módu).
+ *
+ * Hodnota je přímo bit 1 Status registru GDG (IN 0CEh). ROM 9Z-504M při
+ * bitu 1 = 0 ponechá MZ-700 mód, při bitu 1 = 1 zapíše DMD = 0 (MZ-800
+ * mód) a zhasne paletu - viz ]GOPGM (0ECFCh) a CTRL při resetu (0E853h).
+ * Shodně T1-1 ("Stav přepínače MZ-700 ON ... ON = 0"). Poloha přepínače
+ * nemění mód sama, čte ji jen ROM (a program).
+ *
+ * Číselné hodnoty jsou kompatibilní s elementem switch700 ve snapshotu.
+ */
+typedef enum en_MZ800_MODE_SW
 {
-    SWITCH700_OFF = 0,
-    SWITCH700_ON,
-} en_SWITCH700;
+    MZ800_MODE_SW_MZ700 = 0, /**< SW1 = ON: MZ-700 mód (výchozí, v praxi obvyklé nastavení) */
+    MZ800_MODE_SW_MZ800 = 1, /**< SW1 = OFF: MZ-800 mód */
+} en_MZ800_MODE_SW;
 
 typedef enum en_MZ800_HWCOMPAT_ALLOW_PSG1
 {
@@ -55,7 +66,7 @@ typedef struct st_mzarch_main
 #endif /* MZARCH == 800 */
 
 #if MZARCH != 700
-    en_SWITCH700 switch700;
+    en_MZ800_MODE_SW mode_sw; /**< Poloha zadního přepínače SW1 (= bit 1 Status registru GDG) */
 #endif /* MZARCH != 700 */
 
     app_mutex_t *reset_request_mutex;
@@ -74,9 +85,10 @@ typedef struct st_mzarch_main
 extern struct st_mzarch_main g_mzarch_main;
 
 #if MZARCH != 700
-#define MZARCH_TEST_REAR_DIP_SWITCH700 (g_mzarch_main.switch700 == 1)
+/** @brief Nenulové, je-li zadní přepínač SW1 v poloze MZ-800 mód. */
+#define MZARCH_TEST_MODE_SW_MZ800 (g_mzarch_main.mode_sw == MZ800_MODE_SW_MZ800)
 #else
-#define MZARCH_TEST_REAR_DIP_SWITCH700 (0) /* MZ-700 nativní: žádný DIP přepínač MZ-700-mode */
+#define MZARCH_TEST_MODE_SW_MZ800 (0) /* MZ-700 nativní: přepínač MZ-700 / MZ-800 neexistuje */
 #endif
 
 typedef enum en_INSIDEOP
@@ -101,6 +113,28 @@ extern "C"
     extern void mzarch_main(void);
     extern void mzarch_main_reset(void);
     extern void mzarch_run_one_frame(void);
+
+    /**
+     * @brief Resetuje stroj a zavede MZF stejně jako CLI `--run-mzf`.
+     *
+     * Provede úplný reset (mzarch_main_reset(): GDG, paměť, CPU, periferie,
+     * stav debuggeru) a hned za ním mzarch_bootstrap_run_mzf(). Výsledný stav
+     * nezávisí na tom, co v emulátoru běželo předtím, a je shodný se stavem
+     * po startu emulátoru s `--run-mzf`.
+     *
+     * @param filename Cesta k MZF souboru (UTF-8).
+     *
+     * @pre Volá se z emulátorového vlákna v bodě mezi instrukcemi (drain
+     *      fronty dbgapi). Soubor ověřil volající: při nečitelném souboru
+     *      se chová jako mzarch_bootstrap_run_mzf() (viz bootstrap.h).
+     * @post PC = exec adresa MZF, CPU stojí před první instrukcí programu.
+     *       Stav pauzy emulace se nemění.
+     *
+     * Vedlejší efekty: stejné jako tlačítko Reset (BP událost reset, záznam
+     * COLD_RESET do Event Vieweru, zrušení frame-bounded běhu) plus zápisy
+     * bootstrapu do periferií a RAM.
+     */
+    extern void mzarch_main_reset_and_run_mzf(const char *filename);
     extern void mzarch_main_insideop_iorq(void);
     extern void mzarch_main_insideop_mreq(void);
     extern void mzarch_main_insideop_mreq_e00x(void);
@@ -108,7 +142,65 @@ extern "C"
     extern void mzarch_main_insideop_mreq_mz800_vramctrl_read(void);
     extern void mzarch_main_insideop_mreq_mz800_vramctrl_write(void);
     extern void mzarch_main_insideop_iorq_psg_write(void);
-    extern void mzarch_rear_dip_switch_mz700_compat(unsigned value);
+
+    /**
+     * @brief Nahlásí podtečení tiků při uzavření snímku (pojistka).
+     *
+     * Volá ji jen makro gdg_on_screen_done_event(), když
+     * g_gdg.total_elapsed.ticks < VIDEO_SCREEN_TICKS. To za správného běhu
+     * nenastane: znamená to, že se konec snímku zpracoval dvakrát. Funkce
+     * vypíše varování na stderr (prvních 8 výskytů, u osmého navíc oznámí, že
+     * další potlačí); srovnání
+     * tiků na 0 dělá volající makro.
+     *
+     * @param ticks Hodnota g_gdg.total_elapsed.ticks před odečtem.
+     *
+     * @pre Volá se z EMU vlákna. Mimo hot path (nejvýš jednou za snímek).
+     * @par Side effects Výpis na stderr, interní čítač výskytů.
+     */
+    extern void mzarch_main_report_screen_done_underflow(unsigned ticks);
+
+    /**
+     * @brief Nastaví polohu zadního přepínače SW1 (MZ-700 / MZ-800 mód).
+     *
+     * Mění jen stav přepínače, ne aktuální mód GDG - ten přepíná ROM
+     * nebo program podle bitu 1 Status registru (typicky po resetu).
+     *
+     * @param mode Nová poloha přepínače.
+     *
+     * @note Na MZ-700 (MZARCH == 700) nic nedělá.
+     * @note Volá se z UI vlákna bez zámku (dosavadní praxe, zápis jedné
+     *       proměnné čtené emulačním vláknem).
+     */
+    extern void mzarch_mode_sw_set(en_MZ800_MODE_SW mode);
+
+    /**
+     * @brief Převede hodnotu volby --mode-switch na polohu přepínače SW1.
+     *
+     * @param text Hodnota volby: "700" (MZ-700 mód) nebo "800" (MZ-800 mód).
+     * @param out Výstup: poloha přepínače; při chybě se nemění.
+     * @return true při úspěchu; při neplatné nebo chybějící hodnotě vypíše
+     *         chybu na stderr (anglicky) a vrátí false.
+     */
+    extern bool mzarch_mode_sw_parse_cli(const char *text, en_MZ800_MODE_SW *out);
+
+    /**
+     * @brief Hodnota CLI volby s cestou souboru převedená do UTF-8.
+     *
+     * Interní cesty emulátoru jsou v UTF-8 (GLib). Na Windows je ale `argv`
+     * v ANSI kódové stránce procesu, takže se tam hodnota vezme z UTF-16
+     * příkazové řádky (g_win32_get_command_line()), bezeztrátově i pro znaky
+     * mimo ANSI kódovou stránku. Hledá se stejně jako v sdlapp_options: token
+     * přesně `name` (hodnota v dalším tokenu), nebo `name=hodnota`. Jinde
+     * (a když se na Windows volba nenajde) vrátí kopii sdlapp_option_value().
+     *
+     * @param name Jméno volby včetně `--` (např. "--record", "--cmt").
+     * @return Nově alokovaná hodnota v UTF-8 (uvolnit g_free), nebo NULL,
+     *         pokud volba nemá hodnotu.
+     * @pre sdlapp_options_init() už proběhlo.
+     * @note Bez vedlejších efektů, volatelné z libovolného vlákna.
+     */
+    extern char *mzarch_cli_option_value_utf8(const char *name);
 
     /**
      * @brief Vynutí kompletní překreslení obrazovky emulátoru z aktuálního
@@ -120,8 +212,13 @@ extern "C"
      * původní debugger-only @c debugger_forced_screen_update() - dostupná i
      * v buildu bez debuggeru (volá ji snapshot load po obnově stavu).
      *
-     * @pre Volá se v safe-pointu (emulace v pauze nebo z emu vlákna mezi
-     *      instrukcemi) - stejný kontrakt jako debugger_forced_screen_update.
+     * @pre Volá se v safe-pointu: z emu vlákna mezi instrukcemi (dbgapi
+     *      handlery vč. DBGAPI_CMD_SCREEN_REFRESH z Ctrl+R / menu debuggeru,
+     *      krok debuggeru), nebo před startem emu vlákna.
+     * @note Snapshot load z UI dialogu (snapshot_load_dialog.cpp, quickload)
+     *      ji volá z UI vlákna v pauze; souběh s příkazy fronty, které
+     *      framebuffer plní také, není vyloučen [neověřeno] - mimo rozsah
+     *      ui-thread-writes T6 (okna mimo debugger).
      */
     extern void mzarch_forced_full_screen_refresh(void);
 

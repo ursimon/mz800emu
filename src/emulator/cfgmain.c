@@ -39,7 +39,9 @@
 #include "emulator/mzarch/mzarch_platform.h"
 #include "emulator/mzarch/mzarch_config.h"
 #include "snapshot/snapshot_config.h"
+#include "videorec/videorec_config.h"
 #include "i18n_lang.h"
+#include "baseui/baseui_fchooser_lastdir.h"
 #ifdef MZ800EMU_CFG_MCP_TCP_ENABLED
 #include "mcp/mcp_config.h"
 #endif
@@ -181,6 +183,12 @@ void cfgmain_init(void)
 
     /* Registrace snapshot konfigurace */
     snapshot_config_init();
+
+    /* Registrace konfigurace video záznamu (sekce [VIDEOREC]) */
+    videorec_config_init();
+
+    /* Registrace paměti adresářů dialogu pro výběr souboru (sekce [FILECHOOSER]) */
+    baseui_fchooser_lastdir_config_init();
 
     /* Registrace jazykové konfigurace */
     i18n_lang_config_init();

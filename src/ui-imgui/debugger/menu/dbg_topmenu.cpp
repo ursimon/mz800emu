@@ -64,6 +64,7 @@
 
 #include "libs/imgui/imgui.h"
 #include "libs/igfd/ImGuiFileDialog.h"
+#include "ui-imgui/filechooser/imgui_filechooser.h"
 #include "i18n.h"
 #include <cstdlib>
 #include <cstring>
@@ -117,12 +118,13 @@ static void dbg_menu_file(bool *p_open)
         ImGui::Separator();
 
         /*
-         * Hide — skryje okno debuggeru přes debugger_hide_main_window().
+         * Hide - skryje okno debuggeru přes debugger_hide_main_window_request()
+         * (swap CPU callbacků provede emu vlákno přes CMDRQ frontu).
          * Stejný efekt jako Alt+D nebo ESC.
          */
         if (ImGui::MenuItem(_L("Hide"), "Alt+D"))
         {
-            debugger_hide_main_window();
+            debugger_hide_main_window_request();
         };
 
         ImGui::EndMenu();
@@ -165,10 +167,12 @@ static void dbg_menu_emulation(void)
         /* Forced Full Screen Refresh - presunute z drivejsiho top-level
          * menu Screen (= ktere bylo zruseno, melo jen tuto polozku).
          * Vynuti kompletni prekresleni emulatoru obrazovky - klicove pri
-         * krokovacim rezimu kde se obrazovka normalne neaktualizuje. */
+         * krokovacim rezimu kde se obrazovka normalne neaktualizuje.
+         * Framebuffer plní emu vlákno, refresh proto vykoná ono
+         * (DBGAPI_CMD_SCREEN_REFRESH, ui-thread-writes T6d). */
         if (ImGui::MenuItem(_L("Forced Full Screen Refresh"), "Ctrl+R"))
         {
-            debugger_forced_screen_update();
+            (void)dbg_ui_screen_refresh();
         };
 
         ImGui::EndMenu();
@@ -277,6 +281,7 @@ static void dbg_trace_open_dir_dialog ( const char *current )
     config.flags = ImGuiFileDialogFlags_Modal |
                    ImGuiFileDialogFlags_DontShowHiddenFiles |
                    ImGuiFileDialogFlags_ShowDevicesButton;
+    imgui_filechooser_prepare_config ( BASEUI_FCHOOSER_CAT_DBG_EXPORT, config );
     ImGuiFileDialog::Instance ( )->OpenDialog ( "TraceSetDir",
                                                 _ ( "Select trace output directory" ),
                                                 nullptr, config );
@@ -385,17 +390,17 @@ static void dbg_menu_settings(void)
 
             if (ImGui::MenuItem(_L("Off"), NULL, mh_off))
             {
-                mhmap_set_mode(DEBUGGER_MHMAP_MODE_OFF);
+                dbg_ui_mhmap_set_mode(DEBUGGER_MHMAP_MODE_OFF);
             };
 
             if (ImGui::MenuItem(_L("Only With Debug Window"), NULL, mh_with_window))
             {
-                mhmap_set_mode(DEBUGGER_MHMAP_MODE_WITH_WINDOW);
+                dbg_ui_mhmap_set_mode(DEBUGGER_MHMAP_MODE_WITH_WINDOW);
             };
 
             if (ImGui::MenuItem(_L("Always"), NULL, mh_always))
             {
-                mhmap_set_mode(DEBUGGER_MHMAP_MODE_ALWAYS);
+                dbg_ui_mhmap_set_mode(DEBUGGER_MHMAP_MODE_ALWAYS);
             };
 
             ImGui::Separator();
@@ -429,6 +434,7 @@ static void dbg_menu_settings(void)
                 config.flags = ImGuiFileDialogFlags_Modal |
                                ImGuiFileDialogFlags_DontShowHiddenFiles |
                                ImGuiFileDialogFlags_ShowDevicesButton;
+                imgui_filechooser_prepare_config(BASEUI_FCHOOSER_CAT_DBG_EXPORT, config);
                 ImGuiFileDialog::Instance()->OpenDialog("CdlExportDir",
                                                         _("Select CDL export directory"),
                                                         nullptr, config);
@@ -645,6 +651,13 @@ static void dbg_menu_settings(void)
         /* Podmenu: Screen */
         if (ImGui::BeginMenu(_L("Screen")))
         {
+            /*
+             * Oba přepínače jsou prosté unsigned příznaky, které emu vlákno jen
+             * čte při rozhodnutí, zda po editaci / kroku zavolat refresh.
+             * Zápis z UI vlákna je proto bez fronty v pořádku: nic
+             * nealokuje ani nepřepíná callbacky, souběh nejvýš o jeden
+             * krok / zápis posune, kdy se nová hodnota projeví.
+             */
             /*
              * Auto refresh on edit — checkbox.
              * Při editaci VRAM (inline assembler, memory browser) automaticky

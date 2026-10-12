@@ -39,7 +39,15 @@ add_subdirectory(libs/mzf)
 add_subdirectory(libs/mztape)
 add_subdirectory(libs/vram_sim)
 add_subdirectory(libs/wav)
+add_subdirectory(libs/avirec)
 add_subdirectory(libs/zxtape)
+add_subdirectory(videorec)
+
+# Python testy pomocných skriptů z docs/tools/ (bez Pythonu se neregistrují)
+add_subdirectory(tools)
+
+# Informace o buildu: generátor build_revision.c a volba --version
+add_subdirectory(buildinfo)
 
 # Emu core
 add_subdirectory(sanity)
@@ -47,6 +55,7 @@ add_subdirectory(debugger)
 add_subdirectory(memory)
 add_subdirectory(peripherals)
 add_subdirectory(snapshot)
+add_subdirectory(baseui)
 
 # UI
 add_subdirectory(ui)

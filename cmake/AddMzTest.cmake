@@ -116,6 +116,7 @@ mz_glob_sources(_test_emu_sources
     src/emulator/hw-generic
     src/emulator/debugger
     src/emulator/snapshot
+    src/emulator/videorec
     src/emulator/mzarch/mz800
     src/emulator/mcp
 )
@@ -143,8 +144,11 @@ list(APPEND _test_emu_sources
 
 # baseui/baseui_tools.c - obsahuje pomocné funkce které emu potřebuje
 # (baseui.c a baseui_filechooser.c jsou GUI - stubujeme).
+# baseui_fchooser_lastdir.c - paměť adresářů dialogu (čisté C + cfgfile),
+# registruje ji cfgmain_init().
 list(APPEND _test_emu_sources
     ${CMAKE_SOURCE_DIR}/src/baseui/baseui_tools.c
+    ${CMAKE_SOURCE_DIR}/src/baseui/baseui_fchooser_lastdir.c
 )
 
 # generic_driver/ - file/memory driver

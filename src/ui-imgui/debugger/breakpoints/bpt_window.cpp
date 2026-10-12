@@ -45,6 +45,7 @@
 #include "libs/imgui/imgui.h"
 #include "libs/imgui/imgui_internal.h"
 #include "libs/igfd/ImGuiFileDialog.h"
+#include "ui-imgui/filechooser/imgui_filechooser.h"
 #include "i18n.h"
 #include "ui-imgui/bootstrap/myimgui.h"
 #include "ui-imgui/auto_layout.h"
@@ -107,6 +108,44 @@ static bool bpt_parse_hex_input ( const char *text, uint16_t *out_addr ) {
     if ( val > 0xFFFF ) return false;
     *out_addr = (uint16_t) val;
     return true;
+}
+
+
+/**
+ * @brief Delete All: smaže všechny BP, skupiny a $vars přes frontu dbgapi.
+ *
+ * Mazání vykoná emu vlákno (DBGAPI_CMD_BP_CLEAR_ALL), protože pole BP
+ * a bptmap čte při vyhodnocení BP. Výběr v okně se zruší až po úspěchu;
+ * při timeoutu (příkaz neproveden) zůstane okno i výběr beze změny.
+ *
+ * @pre Volat z UI vlákna (blokuje do dokončení příkazu).
+ * @post Při úspěchu g_bpt_ui.selected_id == -1.
+ */
+static void bpt_request_delete_all ( void ) {
+    if ( dbg_ui_bp_clear_all ( ) ) {
+        g_bpt_ui.selected_id = -1;
+    };
+}
+
+
+/**
+ * @brief Nahradí BP obsahem souboru přes frontu dbgapi.
+ *
+ * Soubor načte a BP přestaví emu vlákno (DBGAPI_CMD_BP_LOAD_FILE);
+ * souborový dialog zůstává na UI vlákně, sem přichází jen cesta. Po
+ * úspěchu se zruší výběr - ID ze souboru nemusí odpovídat dříve
+ * vybranému BP. Při timeoutu (příkaz neproveden) zůstane vše beze změny.
+ *
+ * @param filepath Cesta k souboru, NULL = výchozí soubor
+ *                 (g_breakpoints.default_file). Platná do návratu.
+ *
+ * @pre Volat z UI vlákna (blokuje do dokončení příkazu).
+ * @post Při úspěchu g_bpt_ui.selected_id == -1.
+ */
+static void bpt_request_load ( const char *filepath ) {
+    if ( dbg_ui_bp_load_from_file ( filepath ) ) {
+        g_bpt_ui.selected_id = -1;
+    };
 }
 
 
@@ -215,8 +254,7 @@ static void bpt_render_context_menu ( void ) {
     bool has_data = ( breakpoints_group_count ( ) > 0 || breakpoints_count ( ) > 0 );
 
     if ( ImGui::MenuItem ( _L ( "Delete All##bpt" ), NULL, false, has_data ) ) {
-        breakpoints_clear_all ( );
-        g_bpt_ui.selected_id = -1;
+        bpt_request_delete_all ( );
     };
 
     ImGui::EndPopup ( );
@@ -871,8 +909,7 @@ static void bpt_render_filtered_context_menu ( void ) {
 
     bool has_data = ( breakpoints_group_count ( ) > 0 || breakpoints_count ( ) > 0 );
     if ( ImGui::MenuItem ( _L ( "Delete All##bptf" ), NULL, false, has_data ) ) {
-        breakpoints_clear_all ( );
-        g_bpt_ui.selected_id = -1;
+        bpt_request_delete_all ( );
     };
 
     ImGui::EndPopup ( );
@@ -1081,8 +1118,7 @@ static void bpt_render_groups_context_menu ( void ) {
 
     bool has_data = ( breakpoints_group_count ( ) > 0 || breakpoints_count ( ) > 0 );
     if ( ImGui::MenuItem ( _L ( "Delete All##bptg" ), NULL, false, has_data ) ) {
-        breakpoints_clear_all ( );
-        g_bpt_ui.selected_id = -1;
+        bpt_request_delete_all ( );
     };
 
     ImGui::EndPopup ( );
@@ -1282,7 +1318,7 @@ static void bpt_render_menu ( void ) {
     if ( ImGui::BeginMenu ( _L ( "File##bpt" ) ) ) {
 
         if ( ImGui::MenuItem ( _L ( "Load##bpt" ) ) ) {
-            breakpoints_load_from_file ( );
+            bpt_request_load ( NULL );
         };
 
         if ( ImGui::MenuItem ( _L ( "Save##bpt" ) ) ) {
@@ -1298,6 +1334,7 @@ static void bpt_render_menu ( void ) {
             config.countSelectionMax = 1;
             config.flags = ImGuiFileDialogFlags_Modal |
                            ImGuiFileDialogFlags_DontShowHiddenFiles;
+            imgui_filechooser_prepare_config ( BASEUI_FCHOOSER_CAT_DBG_LISTS, config );
             ImGuiFileDialog::Instance ( )->OpenDialog (
                 "BptLoadDialog", _( "Load Breakpoints From..." ),
                 ".bpt,.*", config );
@@ -1311,6 +1348,7 @@ static void bpt_render_menu ( void ) {
             config.flags = ImGuiFileDialogFlags_Modal |
                            ImGuiFileDialogFlags_DontShowHiddenFiles |
                            ImGuiFileDialogFlags_ConfirmOverwrite;
+            imgui_filechooser_prepare_config ( BASEUI_FCHOOSER_CAT_DBG_LISTS, config );
             ImGuiFileDialog::Instance ( )->OpenDialog (
                 "BptSaveDialog", _( "Save Breakpoints As..." ),
                 ".bpt", config );
@@ -1347,6 +1385,7 @@ static void bpt_render_menu ( void ) {
             config.countSelectionMax = 1;
             config.flags = ImGuiFileDialogFlags_Modal |
                            ImGuiFileDialogFlags_DontShowHiddenFiles;
+            imgui_filechooser_prepare_config ( BASEUI_FCHOOSER_CAT_DBG_LISTS, config );
             ImGuiFileDialog::Instance ( )->OpenDialog (
                 "BptDefaultFileDialog", _( "Select Default BPT File" ),
                 ".bpt,.*", config );
@@ -1771,7 +1810,7 @@ void imgui_breakpoints_window ( bool *p_open ) {
     if ( ImGuiFileDialog::Instance ( )->Display ( "BptLoadDialog" ) ) {
         if ( ImGuiFileDialog::Instance ( )->IsOk ( ) ) {
             std::string path = ImGuiFileDialog::Instance ( )->GetFilePathName ( );
-            breakpoints_load_from_filepath ( path.c_str ( ) );
+            bpt_request_load ( path.c_str ( ) );
         };
         ImGuiFileDialog::Instance ( )->Close ( );
     };

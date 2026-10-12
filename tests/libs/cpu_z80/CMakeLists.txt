@@ -39,3 +39,23 @@ mz_add_test(cpu_z80_ei_delay
     LIBS     mzlib_cpu_z80
     LABELS   "standalone;libs"
 )
+
+# Pokriva inkrement R pri opakovanem fetchi HALT a pri prijeti INT/NMI
+# (regrese v2.0.2 - loader hry Interkarate desifruje klicem z R po HALT).
+# Viz emu-experiments/interkarate-cmt/.
+mz_add_test(cpu_z80_r_register
+    TYPE     STANDALONE
+    SOURCES  test_r_register.c
+    LIBS     mzlib_cpu_z80
+    LABELS   "standalone;libs"
+)
+
+# Pokriva navratovou hodnotu z80_step() na hranicich total_cycles 2^31 a 2^32
+# (puvodne odecet pres int = signed overflow, UB). Nalezeno ve forku
+# janrysavy/mz800emu. Viz emu-experiments/fork-bugs/.
+mz_add_test(cpu_z80_step_cycles
+    TYPE     STANDALONE
+    SOURCES  test_step_cycles.c
+    LIBS     mzlib_cpu_z80
+    LABELS   "standalone;libs"
+)

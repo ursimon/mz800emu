@@ -37,6 +37,7 @@
 
 #include "libs/cmtspeed/cmtspeed.h"
 #include "libs/cmt_stream/cmt_stream.h"
+#include "libs/mztape/mztape.h"
 
     typedef enum en_CMT_STATE {
         CMT_STATE_STOP = 0,
@@ -57,12 +58,41 @@
     } en_CMT_MZFSIZE_CHECK;
 
 
+    /**
+     * @brief Stav virtuálního kazetového magnetofonu (globální instance g_cmt).
+     *
+     * Drží vloženou pásku (ext), stav transportu (state, paused), stav
+     * přehrávání aktuálního bloku (playsts), výstupní signál z pásky (output)
+     * a časovou základnu přehrávání v GDG ticích (start_time, paused_time).
+     *
+     * Invarianty:
+     * - Bez vložené pásky (ext == NULL) je transport vždy ve stavu
+     *   CMT_STATE_STOP s paused == 0 a playsts == CMTEXT_BLOCK_PLAYSTS_STOP.
+     *   Funkce, které ve stavu PLAY/RECORD čtou ext (cmt_update_output,
+     *   cmt_write_data), na tento invariant spoléhají a navíc ho samy
+     *   defenzivně testují. Za běhu ho udržují cmt_stop() a cmt_eject()
+     *   (i bez vložené pásky přepnou do STOP), po načtení snapshotu ho
+     *   obnoví cmt_sanitize_state().
+     * - Ve stavu CMT_STATE_STOP je paused == 0.
+     *
+     * Ownership: ext ukazuje na statickou instanci cmtext rozšíření (nikdy
+     * se neuvolňuje přes g_cmt), last_filename a ui_base_filename vlastní
+     * g_cmt (uvolňují se přes baseui_tools_mem_free).
+     *
+     * Synchronizace: přístup jen z emulátorového vlákna (nebo s pozastavenou
+     * emulací, např. při načítání snapshotu).
+     */
     typedef struct st_CMT {
         st_CMTEXT *ext;
         char *last_filename;
         char *ui_base_filename;
         en_CMT_STREAM_POLARITY polarity;
+        /** Výchozí rychlost MZ bloků: poměr, nebo CMTSPEED_CUSTOM (pak platí
+         *  mz_custom_pulses). Platí pro bloky s CMTEXT_BLOCK_SPEED_DEFAULT. */
         en_CMTSPEED mz_cmtspeed;
+        /** Výchozí vlastní délky pulzů (cfg CMT/mz_custom_pulse_*_us). Uchovávají
+         *  se i při výchozí rychlosti v poměru; vždy platné (kladné délky). */
+        st_MZTAPE_PULSES_LENGTH mz_custom_pulses;
         en_CMT_STATE state;
         int paused;
         en_CMTEXT_BLOCK_PLAYSTS playsts;
@@ -70,6 +100,9 @@
         uint64_t start_time;
         uint64_t paused_time;
         int ui_player_update;
+        /** Uživatelská preference "MAX SPEED během přehrávání" (cfg CMT/cpu_boost,
+         *  cfg element ukazuje přímo sem). Snapshot ji zapisuje, ale při
+         *  načtení neobnovuje (viz snap_cmt_load). */
         en_CMT_CPU_BOOST cpu_boost;
         en_CMT_MZFSIZE_CHECK mzfsize_check;
         int recording_to_stream; // pri RECORD identifikuje, zda uz mame zalozen stream
@@ -126,7 +159,66 @@ extern "C" {
     void cmt_pause ( int value );
     void cmt_stop ( void );
     void cmt_eject ( void );
+    bool cmt_sanitize_state ( void );
     int cmt_change_speed ( en_CMTSPEED cmtspeed );
+
+    /**
+     * @brief Nastaví výchozí rychlost Virtual CMT na vlastní délky pulzů.
+     *
+     * Uloží délky do g_cmt.mz_custom_pulses a výchozí rychlost přepne na
+     * CMTSPEED_CUSTOM. Vložený blok s výchozí rychlostí se při zastaveném
+     * transportu přegeneruje (stejně jako u cmt_change_speed()).
+     *
+     * @param pulses Délky pulzů (nesmí být NULL, všechny délky kladné).
+     * @return EXIT_SUCCESS; EXIT_FAILURE, pokud se blok nepodařilo
+     *         přegenerovat - nastavení se pak nemění.
+     * @pre Voláno z emulátorového vlákna (nebo s pozastavenou emulací).
+     */
+    int cmt_change_custom_pulses ( const st_MZTAPE_PULSES_LENGTH *pulses );
+
+    int cmt_tape_set_block_cmt_speed ( int block_id, en_CMTSPEED cmtspeed );
+
+    /**
+     * @brief Nastaví jednomu bloku vložené pásky vlastní délky pulzů.
+     *
+     * Obdoba cmt_tape_set_block_cmt_speed(): blok dostane pevnou rychlost
+     * (CMTEXT_BLOCK_SPEED_SET) CMTSPEED_CUSTOM s danými délkami. Projeví se
+     * při příštím otevření bloku.
+     *
+     * @param block_id Index bloku v páskovém kontejneru.
+     * @param pulses Délky pulzů (nesmí být NULL).
+     * @return 0 při úspěchu; -1 bez pásky, u pásky bez indexu bloků, mimo
+     *         rozsah nebo u bloku, který není MZF. Při chybě se nic nemění.
+     * @pre Voláno z emulátorového vlákna.
+     */
+    int cmt_tape_set_block_pulses ( int block_id, const st_MZTAPE_PULSES_LENGTH *pulses );
+
+    /**
+     * @brief Vrátí délky pulzů, se kterými Virtual CMT přehrává danou rychlost.
+     *
+     * @param cmtspeed Poměr, nebo CMTSPEED_CUSTOM.
+     * @param custom Vlastní délky pro CMTSPEED_CUSTOM (jinak se ignoruje, smí být NULL).
+     * @param[out] pulses Výsledné délky v sekundách.
+     * @return EXIT_SUCCESS; EXIT_FAILURE pro neplatnou rychlost nebo
+     *         CMTSPEED_CUSTOM bez custom.
+     */
+    int cmt_get_speed_pulses ( en_CMTSPEED cmtspeed, const st_MZTAPE_PULSES_LENGTH *custom, st_MZTAPE_PULSES_LENGTH *pulses );
+
+    /**
+     * @brief Vrátí efektivní délky pulzů MZF bloku vložené pásky.
+     *
+     * Blok s pevnou rychlostí (CMTEXT_BLOCK_SPEED_SET) má svou rychlost,
+     * blok s výchozí rychlostí výchozí rychlost Virtual CMT. U samostatného
+     * MZF (bez indexu bloků) platí výchozí rychlost pro block_id 0.
+     *
+     * @param block_id Index bloku.
+     * @param[out] pulses Délky pulzů v sekundách.
+     * @return 0 při úspěchu; -1 bez pásky, mimo rozsah nebo u bloku, který
+     *         není MZF.
+     * @pre Voláno z emulátorového vlákna (nebo z UI vlákna stejně jako
+     *      ostatní čtení seznamu bloků).
+     */
+    int cmt_tape_get_block_pulses ( int block_id, st_MZTAPE_PULSES_LENGTH *pulses );
 
     void cmt_screen_done_period ( void );
     int cmt_read_data ( void );
@@ -134,6 +226,34 @@ extern "C" {
     void cmt_write_data ( int value );
 
     void cmt_cpu_boost_set ( en_CMT_CPU_BOOST cpu_boost );
+
+    /**
+     * @brief Srovná MAX SPEED se stavem transportu podle volby cpu_boost.
+     *
+     * Sémantika cpu_boost: automatická MAX SPEED po dobu, kdy páska běží.
+     * - cpu_boost zapnutý, páska vložená, PLAY nebo RECORD bez pauzy
+     *   -> emulator_max_speed_boost(true) (zapne MAX SPEED, pokud neběží),
+     * - jinak -> emulator_max_speed_boost(false): vypne MAX SPEED jen tehdy,
+     *   když ji zapnul cpu_boost; MAX SPEED zvolenou uživatelem nechá.
+     *
+     * Volá se při každé změně transportu (play, pauza, stop), při změně
+     * volby a po načtení snapshotu (snap_cmt_load) - snapshot obnoví stav
+     * transportu, ale dříve rychlost emulace nesrovnal. Samotnou volbu
+     * cpu_boost snapshot neobnovuje (uživatelská preference, do snapshotu
+     * se zapisuje jen kvůli kompatibilitě); platí aktuální volba uživatele.
+     * Při RECORD pak MAX SPEED dál řídí cmt_screen_done_period() podle
+     * aktivity zápisu: po 5 s bez zápisu na pásku MAX SPEED od boostu
+     * vypne, při další aktivitě (kontrola jednou za 50 snímků) ji zapne.
+     * Vypne-li uživatel MAX SPEED během boostu, automatika ji znovu zapne
+     * při nejbližší pauze/obnovení transportu nebo změně volby cpu_boost
+     * (při RECORD i při další aktivitě zápisu).
+     *
+     * @pre Voláno z emulátorového vlákna nebo při pozastavené emulaci;
+     *      platí invarianty st_CMT.
+     * @post Bez aktivního transportu (nebo s vypnutým cpu_boost) neběží
+     *       MAX SPEED zapnutá automatikou (g_emulator.max_speed_boost == false).
+     */
+    void cmt_cpu_boost_apply ( void );
     void cmt_mzfsize_check_set ( en_CMT_MZFSIZE_CHECK mzfsize_check );
 
 #ifdef __cplusplus

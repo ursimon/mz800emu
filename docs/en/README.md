@@ -15,6 +15,11 @@ If you want to always have the console displayed on the Windows platform, you ha
 - Create shortcut for `mz800emu.exe` and add exec parameter `--console`
 - Compile program with parameter `FORCE_CONSOLE=1`
 
+The `--help` and `--version` options also print to the console the program was
+started from (cmd.exe, PowerShell) - without `--console`. cmd.exe does not wait
+for a windowed program, so the output may appear after the prompt; redirecting
+to a file is cleaner, e.g. `mz800emu --version > version.txt`.
+
 
 ## Keyboard mapping
 
@@ -62,8 +67,13 @@ are rejected with an error - use `--help` for a generated listing.
 | Option | Argument | Description |
 |--------|----------|-------------|
 | `--help` | - | Print the option list and exit. |
+| `--version` | - | Print the version, revision, build date, source origin (branch, commit, uncommitted changes, when available), compiler, compiled-in features, SDL and GLib versions and the host OS, then exit. Works in every binary (`mz800emu`, `mz700emu-pal`, `mz700emu-ntsc`, `mz1500emu`) and with `--mcp-pipe`; neither the emulator nor a window is started. |
 | `--console` | - | Windows only: allocate a console window for stdout/stderr. |
 | `--run-mzf` | `<filepath>` | Automatically load and run the given MZF file after the emulator boots. |
+| `--cmt` | `<filepath>` | Insert a tape into the virtual cassette recorder at startup: `.mzf`, `.m12`, `.mzt`, `.tap`, `.wav` or `.wave`. If the CMT hack is on, it is turned off for this session only (the `.ini` keeps the original setting). In the window, the Virtual CMT window opens. Missing file or unknown extension = error and exit. |
+| `--cmt-play` | - | With `--cmt`: press PLAY after inserting the tape. When the emulator boots through the ROM, the ROM stops the tape motor during its startup, so the tape waits in PLAY + PAUSE; it plays at once only together with `--run-mzf`. |
+| `--cmt-play-pause` | - | With `--cmt`: the tape waits in PLAY + PAUSE and starts moving when the ROM or the program turns the cassette motor on (e.g. `LOAD` in BASIC, loading from the monitor). Cannot be combined with `--cmt-play`. |
+| `--cmt-boot` | - | MZ-800 only, with `--cmt`: like `--cmt-play-pause`, and the emulator holds the C key from start until the ROM turns the motor on, so the boot menu loads the program from the tape. Works in both positions of the mode switch. Cannot be combined with `--run-mzf` or `--cmt-play`. |
 | `--cdl-mode` | `<off\|window\|always>` | Set the CDL (Memory Heatmap) recording mode. |
 | `--cdl-dir` | `<dirpath>` | Set the target directory for CDL export. The directory is created on export if it does not exist. |
 | `--cdl-name` | `<basename>` | Set the CDL export basename (without `.json`). The full meta path is `<dir>/<name>.json`; per-region binary files are saved as `<dir>/<name>_<region>.cdl`. |
@@ -99,6 +109,10 @@ are rejected with an error - use `--help` for a generated listing.
 | `--no-first-run-windows` | - | Suppress automatic opening of About + Version Check Setup windows on first run (when no `.ini` file exists). Useful for headless / scripted launches. |
 | `--headless` | - | Run the emulator without a GUI window and without audio output. The SDL3 video and audio subsystems run in no-op mode (no SDL window, no audio device opened). The framebuffer is still rendered into memory (ready for later MCP frame Resources). Intended for CI / batch / subprocess scenarios with no display or audio device available. The process keeps running until SIGINT (Ctrl+C) or an SDL quit event. Recommended to combine with `--no-first-run-windows`. |
 | `--maxspeed-bench` | - | Start directly in MAX SPEED and periodically (every 5 s) print the MAX SPEED benchmark report to the console (efficiency %, throughput, FB-FPS, distribution). Intended for headless emulation efficiency measurement. Combine with `--headless` and `--run-mzf`. See [`maxspeed-benchmark.md`](maxspeed-benchmark.md). |
+| `--speed` | `<percent\|max>` | Set the emulation speed at start: `max` = MAX SPEED (no real-time pacing), an integer 1-4000 = custom speed in percent (100 = normal). Works in the window and with `--headless` (where emulation otherwise runs in real time). Invalid value = error and exit. Combined with `--maxspeed-bench`, MAX SPEED wins. |
+| `--mode-switch` | `<700\|800>` | MZ-800 only: position of the rear mode switch (SW1) - `700` = MZ-700 mode, `800` = MZ-800 mode. The ROM reads the switch when it starts a program. Overrides the `[MZ800] mode_switch` value from the `.ini` (same as the Rear DIP Switch menu). Invalid value = error and exit. |
+| `--record` | `<file.avi>` | Start video recording right after startup. See [`video-recording.md`](video-recording.md). |
+| `--record-frames` | `<count>` | Stop video recording after the given number of frames; with `--headless` the emulator then exits. |
 
 ### CDL export layout
 

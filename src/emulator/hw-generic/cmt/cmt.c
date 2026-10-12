@@ -122,10 +122,94 @@ static void cmt_bp_event_state_change_fire ( void ) {
 #endif
 
 
+/* Doxygen viz cmt.h. */
+void cmt_cpu_boost_apply(void)
+{
+    if ((g_cmt.cpu_boost != CMT_CPU_BOOST_ENABLED) || (!CMT_TEST_FILLED)
+        || (CMT_TEST_STOP) || (CMT_TEST_PAUSED))
+    {
+        emulator_max_speed_boost(false);
+        return;
+    };
+
+    /* PLAY i RECORD bez pauzy. Při RECORD ji pak cmt_screen_done_period()
+     * dál vypíná/zapíná podle toho, zda program na pásku zapisuje. */
+    emulator_max_speed_boost(true);
+}
+
+/**
+ * @brief Společné vedlejší efekty přechodu transportu do STOP.
+ *
+ * Vypne MAX SPEED, pokud ji zapnul cpu_boost (uživatelem zvolenou MAX SPEED
+ * nechá - viz cmt_cpu_boost_apply), odpálí BP eventy změny stavu
+ * (CMT_MSTATE, CMT_STATE_CHANGE) a aktualizuje UI. Volá se po nastavení
+ * g_cmt.state = STOP z cmt_stop() a cmt_reset_transport_without_tape().
+ *
+ * @pre Voláno z emulátorového vlákna; transport už je ve STOP.
+ */
+static void cmt_transport_stopped_notify(void)
+{
+    cmt_cpu_boost_apply();
+
+    cmt_bp_event_mstate_fire ( );
+    cmt_bp_event_state_change_fire ( );
+
+    ui_cmt_window_update();
+}
+
+/**
+ * @brief Převede transport bez vložené pásky do klidového stavu STOP.
+ *
+ * Obnovuje invariant st_CMT (bez pásky STOP) za běhu: state = STOP,
+ * paused = 0, playsts = STOP, output = 0, start_time = paused_time = 0.
+ * Pokud byl transport aktivní (PLAY/RECORD nebo pauza), provede stejné
+ * vedlejší efekty jako cmt_stop (cmt_transport_stopped_notify: MAX SPEED
+ * při cpu_boost, BP eventy, UI). Nulování časové základny zaručí, že následné
+ * cmt_open + cmt_play začne přehrávat novou pásku od začátku (dříve se
+ * použila pozice ze stavu obnoveného snapshotem).
+ *
+ * @pre Voláno z emulátorového vlákna; g_cmt.ext == NULL.
+ * @post CMT_TEST_STOP a !CMT_TEST_PAUSED.
+ */
+static void cmt_reset_transport_without_tape(void)
+{
+    bool was_active = (!CMT_TEST_STOP) || (g_cmt.paused != 0);
+
+    g_cmt.state = CMT_STATE_STOP;
+    g_cmt.paused = 0;
+    g_cmt.playsts = CMTEXT_BLOCK_PLAYSTS_STOP;
+    g_cmt.output = 0;
+    g_cmt.start_time = 0;
+    g_cmt.paused_time = 0;
+    g_cmt.recording_to_stream = 0;
+
+    if (!was_active)
+        return;
+
+    printf("Virtual CMT is stopped (no tape inserted).\n");
+
+    cmt_transport_stopped_notify();
+}
+
+/**
+ * @brief Zastaví přehrávání nebo nahrávání (tlačítko STOP).
+ *
+ * S vloženou páskou zavolá cb_stop rozšíření, přejde do STOP a vypne MAX
+ * SPEED zapnutý přes cpu_boost. Bez vložené pásky transport také uvede do
+ * STOP (cmt_reset_transport_without_tape) - dříve to byl no-op, takže
+ * stav PLAY obnovený snapshotem nešlo zastavit, přestože MCP hlásilo
+ * úspěch.
+ *
+ * @pre Voláno z emulátorového vlákna.
+ * @post CMT_TEST_STOP, paused == 0, playsts == STOP, output == 0.
+ */
 void cmt_stop(void)
 {
     if (!CMT_TEST_FILLED)
+    {
+        cmt_reset_transport_without_tape();
         return;
+    };
     if (CMT_TEST_STOP)
         return;
 
@@ -139,15 +223,7 @@ void cmt_stop(void)
     g_cmt.playsts = CMTEXT_BLOCK_PLAYSTS_STOP;
     g_cmt.output = 0;
 
-    if (g_cmt.cpu_boost == CMT_CPU_BOOST_ENABLED)
-    {
-        emulator_max_speed(false);
-    };
-
-    cmt_bp_event_mstate_fire ( );
-    cmt_bp_event_state_change_fire ( );
-
-    ui_cmt_window_update();
+    cmt_transport_stopped_notify();
 }
 
 void cmt_pause(int value)
@@ -177,14 +253,10 @@ void cmt_pause(int value)
         g_cmt.paused = 0;
     };
 
-    if ((g_cmt.cpu_boost == CMT_CPU_BOOST_ENABLED) && (!CMT_TEST_PAUSED) && (!CMT_TEST_STOP))
-    {
-        emulator_max_speed(true);
-    }
-    else
-    {
-        emulator_max_speed(false);
-    };
+    /* Dříve se při vypnutém cpu_boost (nebo pauze) volalo
+     * emulator_max_speed(false) bezpodmínečně, takže pauza pásky
+     * vypnula i MAX SPEED zvolenou uživatelem. */
+    cmt_cpu_boost_apply();
 
     if (CMT_TEST_PAUSED)
     {
@@ -209,10 +281,28 @@ void cmt_pause(int value)
     ui_cmt_window_update();
 }
 
+/**
+ * @brief Vysune pásku (zastaví transport, zavolá cb_eject, ext = NULL).
+ *
+ * Bez vložené pásky jen uvede transport do STOP s vynulovanou časovou
+ * základnou (cmt_reset_transport_without_tape). cmt_open_file_by_extension
+ * volá eject před otevřením nové pásky, takže tím nová páska vždy startuje
+ * z čistého STOP: následný cmt_play nastaví start_time a zavolá cb_play
+ * bloku, přehrávání začne od začátku pásky. Dříve eject bez pásky nechal
+ * stav PLAY/paused ze snapshotu, cmt_play byl pak no-op a cmt_pause(0)
+ * dopočítal pozici pásky ze staré paused_time (za koncem nové pásky) -
+ * program čekal na hranu signálu, která nikdy nepřišla.
+ *
+ * @pre Voláno z emulátorového vlákna.
+ * @post !CMT_TEST_FILLED, CMT_TEST_STOP, ui_base_filename == NULL.
+ */
 void cmt_eject(void)
 {
     if (!CMT_TEST_FILLED)
+    {
+        cmt_reset_transport_without_tape();
         return;
+    };
     if (!CMT_TEST_STOP)
         cmt_stop();
     if (g_cmt.ext->cb_eject)
@@ -238,6 +328,67 @@ void cmt_eject(void)
     ui_cmt_window_update();
 }
 
+/**
+ * @brief Uvede stav transportu do souladu s vloženou páskou (bez vedlejších efektů).
+ *
+ * Určeno pro snapshot loader: snapshot obnoví stav transportu (state,
+ * paused, časy, playsts), ale obraz pásky neukládá ani neotevírá. Pokud
+ * obnovený stav neodpovídá aktuálně vložené pásce, transport se přepne do
+ * klidového stavu STOP:
+ * - bez vložené pásky (ext == NULL) při libovolném stavu,
+ * - PLAY nad páskou, kterou nelze přehrát (cmtext_is_playable selže),
+ * - RECORD nad páskou, do které nelze nahrávat (cmtext_is_recordable selže).
+ *
+ * Klidový stav: state = STOP, paused = 0, playsts = STOP, output = 0,
+ * start_time = paused_time = 0, recording_to_stream = 0. Ve stavu STOP
+ * (i bez přepnutí) se navíc srovná paused = 0 a playsts = STOP.
+ *
+ * Funkce záměrně nevolá cb_stop rozšíření, nemění rychlost emulace (to po
+ * načtení snapshotu dělá cmt_cpu_boost_apply()), nevolá BP eventy
+ * ani aktualizaci UI - jen opravuje hodnoty právě načtené ze snapshotu.
+ *
+ * @return true, pokud byl transport z PLAY/RECORD přepnut do STOP; jinak false.
+ *
+ * @pre Emulace je pozastavená nebo voláno z emulátorového vlákna.
+ * @post Platí invarianty st_CMT (bez pásky STOP, ve STOP paused == 0).
+ */
+bool cmt_sanitize_state(void)
+{
+    bool reset = false;
+
+    if (!CMT_TEST_FILLED)
+    {
+        reset = true;
+    }
+    else if (CMT_TEST_PLAY && (EXIT_SUCCESS != cmtext_is_playable(g_cmt.ext)))
+    {
+        reset = true;
+    }
+    else if (CMT_TEST_RECORD && (EXIT_SUCCESS != cmtext_is_recordable(g_cmt.ext)))
+    {
+        reset = true;
+    };
+
+    bool was_active = !CMT_TEST_STOP;
+
+    if (reset)
+    {
+        g_cmt.state = CMT_STATE_STOP;
+        g_cmt.output = 0;
+        g_cmt.start_time = 0;
+        g_cmt.paused_time = 0;
+        g_cmt.recording_to_stream = 0;
+    };
+
+    if (CMT_TEST_STOP)
+    {
+        g_cmt.paused = 0;
+        g_cmt.playsts = CMTEXT_BLOCK_PLAYSTS_STOP;
+    };
+
+    return (reset && was_active);
+}
+
 void cmt_play(void)
 {
     if (!CMT_TEST_FILLED)
@@ -252,10 +403,7 @@ void cmt_play(void)
     // printf ( "CMT start: %ul\n", gdg_get_total_ticks ( ) );
     g_cmt.ui_player_update = 0;
     ui_cmt_window_update();
-    if ((g_cmt.cpu_boost == CMT_CPU_BOOST_ENABLED) && (!CMT_TEST_PAUSED))
-    {
-        emulator_max_speed(true);
-    };
+    cmt_cpu_boost_apply();
     if (!CMT_TEST_PAUSED)
     {
         printf("Virtual CMT is playing.\n");
@@ -276,10 +424,38 @@ void cmt_play(void)
     cmt_bp_event_state_change_fire ( );
 }
 
+/**
+ * @brief Spustí přehrávání v pauze (PLAY + paused, páska stojí).
+ *
+ * Nastaví paused = 1 a zavolá cmt_play(). Pokud cmt_play() přehrávání
+ * nespustí, příznak pauzy se vrátí:
+ * - transport zůstal ve STOP (bez pásky, nepřehratelná páska) -> paused = 0;
+ *   jinak by vznikl stav STOP + paused, který porušuje invariant st_CMT
+ *   a následný stop/eject by ho považoval za aktivní transport,
+ * - transport už předtím nebyl ve STOP (PLAY/RECORD, cmt_play je no-op)
+ *   -> původní hodnota paused (bez přepočtu paused_time by vynucená pauza
+ *   rozbila pozici pásky).
+ *
+ * @pre Voláno z emulátorového vlákna.
+ * @post Buď start z STOP do PLAY s paused == 1, nebo stav transportu beze
+ *       změny; ve STOP je vždy paused == 0.
+ */
 void cmt_play_paused(void)
 {
+    bool was_stop = CMT_TEST_STOP;
+    int prev_paused = g_cmt.paused;
+
     g_cmt.paused = 1;
     cmt_play();
+
+    if (CMT_TEST_STOP)
+    {
+        g_cmt.paused = 0;
+    }
+    else if (!was_stop)
+    {
+        g_cmt.paused = prev_paused;
+    };
 }
 
 static void cmt_record(void)
@@ -403,7 +579,7 @@ void cmt_ui_record(void)
     if (!CMT_TEST_FILLED)
     {
 
-        baseui_fchooser_t *fch = baseui_filechooser_save_file(_("Create a new WAV file"), ".wav", NULL, NULL, _("newfile.wav"), cmt_ui_record_cb, NULL);
+        baseui_fchooser_t *fch = baseui_filechooser_save_file(BASEUI_FCHOOSER_CAT_CMT, _("Create a new WAV file"), ".wav", NULL, NULL, _("newfile.wav"), cmt_ui_record_cb, NULL);
         if (!fch)
         {
             fprintf(stderr, "%s(%d): filechooser error\n", __FILE__, __LINE__);
@@ -501,6 +677,18 @@ int cmt_record_to_file(const char *path)
     return EXIT_SUCCESS;
 }
 
+/**
+ * @brief Změní výchozí rychlost Virtual CMT (bloky s CMTEXT_BLOCK_SPEED_DEFAULT).
+ *
+ * Při zastaveném transportu se vložený blok s výchozí rychlostí hned
+ * přegeneruje. CMTSPEED_CUSTOM znamená výchozí vlastní délky pulzů
+ * g_cmt.mz_custom_pulses (nastavují se přes cmt_change_custom_pulses()).
+ *
+ * @param cmtspeed Poměr nebo CMTSPEED_CUSTOM.
+ * @return EXIT_SUCCESS; EXIT_FAILURE, pokud se blok nepodařilo přegenerovat
+ *         (výchozí rychlost se pak nemění).
+ * @pre Voláno z emulátorového vlákna nebo z UI vlákna při zastaveném transportu.
+ */
 int cmt_change_speed(en_CMTSPEED cmtspeed)
 {
     int ret = EXIT_SUCCESS;
@@ -530,6 +718,133 @@ int cmt_change_speed(en_CMTSPEED cmtspeed)
     return ret;
 }
 
+/**
+ * @brief Nastaví vlastní rychlost jednoho bloku vložené pásky (per-blok override).
+ *
+ * Blok se přepne na vlastní rychlost (blspeed = CMTEXT_BLOCK_SPEED_SET) a
+ * uloží se mu cmtspeed. Bez SET by cmtmzftape_block_open() rychlost bloku
+ * ignorovala a použila globální g_cmt.mz_cmtspeed (dříve chyba MCP
+ * cmt_tape_block_speed - nastavení nemělo účinek). GUI seznam bloků
+ * (cmt_tape_index.cpp) nastavuje obojí stejně.
+ *
+ * Změna se projeví při příštím otevření bloku; právě otevřený blok se
+ * nepřegeneruje.
+ *
+ * @param block_id Index bloku v páskovém kontejneru (0..count-1).
+ * @param cmtspeed Rychlost (platná en_CMTSPEED, viz cmtspeed_is_valid()).
+ * @return 0 při úspěchu; -1 bez vložené pásky, u pásky bez indexu bloků
+ *         (jiný kontejner než CMTEXT_CONTAINER_TYPE_SIMPLE_TAPE) nebo při
+ *         block_id mimo rozsah; -2 při neplatné rychlosti. Při chybě se
+ *         nic nemění.
+ *
+ * @pre Voláno z emulátorového vlákna.
+ * @post Při úspěchu cmtext_container_get_block_speed() == SET a
+ *       cmtext_container_get_block_cmt_speed() == cmtspeed pro block_id.
+ */
+int cmt_tape_set_block_cmt_speed(int block_id, en_CMTSPEED cmtspeed)
+{
+    if ((!CMT_TEST_FILLED) || (!g_cmt.ext))
+        return -1;
+    if (!cmtspeed_is_valid(cmtspeed))
+        return -2;
+    st_CMTEXT_CONTAINER *container = cmtext_get_container(g_cmt.ext);
+    if (!container)
+        return -1;
+    /* Per-blok rychlost má smysl jen pro SIMPLE_TAPE (má index bloků);
+     * SINGLE container index nemá a settery by dereferencovaly NULL
+     * container->tape. Settery mají na rozsah block_id jen assert. */
+    if ((cmtext_container_get_type(container) != CMTEXT_CONTAINER_TYPE_SIMPLE_TAPE)
+        || (block_id < 0)
+        || (block_id >= cmtext_container_get_count_blocks(container)))
+        return -1;
+    cmtext_container_set_block_speed(container, block_id, CMTEXT_BLOCK_SPEED_SET);
+    cmtext_container_set_block_cmt_speed(container, block_id, cmtspeed);
+    return 0;
+}
+
+int cmt_change_custom_pulses(const st_MZTAPE_PULSES_LENGTH *pulses)
+{
+    /* cb_set_speed bloku čte výchozí vlastní pulzy z g_cmt - nastavit
+     * předem a při neúspěchu vrátit */
+    st_MZTAPE_PULSES_LENGTH saved = g_cmt.mz_custom_pulses;
+    g_cmt.mz_custom_pulses = *pulses;
+    if (EXIT_SUCCESS != cmt_change_speed(CMTSPEED_CUSTOM))
+    {
+        g_cmt.mz_custom_pulses = saved;
+        ui_cmt_window_update();
+        return EXIT_FAILURE;
+    };
+    return EXIT_SUCCESS;
+}
+
+int cmt_tape_set_block_pulses(int block_id, const st_MZTAPE_PULSES_LENGTH *pulses)
+{
+    if ((!CMT_TEST_FILLED) || (!g_cmt.ext))
+        return -1;
+    st_CMTEXT_CONTAINER *container = cmtext_get_container(g_cmt.ext);
+    if (!container)
+        return -1;
+    /* stejné meze jako cmt_tape_set_block_cmt_speed() */
+    if ((cmtext_container_get_type(container) != CMTEXT_CONTAINER_TYPE_SIMPLE_TAPE)
+        || (block_id < 0)
+        || (block_id >= cmtext_container_get_count_blocks(container)))
+        return -1;
+    if (EXIT_SUCCESS != cmtext_container_set_block_pulses(container, block_id, pulses))
+        return -1;
+    cmtext_container_set_block_speed(container, block_id, CMTEXT_BLOCK_SPEED_SET);
+    cmtext_container_set_block_cmt_speed(container, block_id, CMTSPEED_CUSTOM);
+    return 0;
+}
+
+int cmt_get_speed_pulses(en_CMTSPEED cmtspeed, const st_MZTAPE_PULSES_LENGTH *custom, st_MZTAPE_PULSES_LENGTH *pulses)
+{
+    if (cmtspeed_is_custom(cmtspeed))
+    {
+        if (!custom)
+            return EXIT_FAILURE;
+        *pulses = *custom;
+        return EXIT_SUCCESS;
+    };
+    return mztape_get_speed_pulses(CMTMZF_FORMATSET, cmtspeed, pulses);
+}
+
+int cmt_tape_get_block_pulses(int block_id, st_MZTAPE_PULSES_LENGTH *pulses)
+{
+    if ((!CMT_TEST_FILLED) || (!g_cmt.ext))
+        return -1;
+    st_CMTEXT_CONTAINER *container = cmtext_get_container(g_cmt.ext);
+    if (!container)
+        return -1;
+    if (cmtext_container_get_type(container) != CMTEXT_CONTAINER_TYPE_SIMPLE_TAPE)
+    {
+        /* samostatný soubor: jediný blok; MZF nese rychlost svého streamu,
+         * WAV rychlost nemá */
+        st_CMTEXT_BLOCK *block = g_cmt.ext->block;
+        if ((block_id != 0) || (!block) || (cmtext_block_get_type(block) != CMTEXT_BLOCK_TYPE_MZF))
+            return -1;
+        const st_CMTMZF_BLOCKSPEC *blspec = (const st_CMTMZF_BLOCKSPEC *)block->spec;
+        return (EXIT_SUCCESS == cmt_get_speed_pulses(blspec->cmtspeed, &blspec->pulses, pulses)) ? 0 : -1;
+    };
+    if ((block_id < 0) || (block_id >= cmtext_container_get_count_blocks(container)))
+        return -1;
+    if (cmtext_container_get_block_type(container, block_id) != CMTEXT_BLOCK_TYPE_MZF)
+        return -1;
+    int ret;
+    if (cmtext_container_get_block_speed(container, block_id) == CMTEXT_BLOCK_SPEED_SET)
+    {
+        en_CMTSPEED cmtspeed = cmtext_container_get_block_cmt_speed(container, block_id);
+        if (cmtspeed_is_custom(cmtspeed))
+            ret = cmtext_container_get_block_pulses(container, block_id, pulses);
+        else
+            ret = cmt_get_speed_pulses(cmtspeed, NULL, pulses);
+    }
+    else
+    {
+        ret = cmt_get_speed_pulses(g_cmt.mz_cmtspeed, &g_cmt.mz_custom_pulses, pulses);
+    };
+    return (ret == EXIT_SUCCESS) ? 0 : -1;
+}
+
 void cmt_exit(void)
 {
 
@@ -549,6 +864,82 @@ void cmt_propagatecfg_cmt_speed(void *e, void *data)
     (void)data;
     g_cmt.mz_cmtspeed = cfgelement_get_keyword_value((CFGELM *)e);
     ui_cmt_window_update();
+}
+
+/**
+ * @brief Výchozí vlastní délky pulzů v µs: LONG high, LONG low, SHORT high, SHORT low.
+ *
+ * Sada 1xspeed.mzf zařízení UniCMT, shodná s nominálem ROM ze servisního
+ * manuálu (báze hw/25-unicmt.md kap. 2.1).
+ */
+static const double g_cmt_default_custom_pulses_us[4] = {470.0, 494.0, 240.0, 278.0};
+
+/** @brief Názvy INI klíčů vlastních délek pulzů (pořadí jako g_cmt_cfg_custom_pulses_us). */
+static char *g_cmt_cfg_custom_pulses_name[4] = {
+    "mz_custom_pulse_long_high_us",
+    "mz_custom_pulse_long_low_us",
+    "mz_custom_pulse_short_high_us",
+    "mz_custom_pulse_short_low_us",
+};
+
+/**
+ * @brief Zrcadlo g_cmt.mz_custom_pulses v µs pro cfg elementy (save handler ukazuje sem).
+ *
+ * Synchronizuje ho cmt_cfg_custom_pulses_sync() před uložením INI
+ * (cfgmodule save callback) a propagate callback po načtení.
+ */
+static float g_cmt_cfg_custom_pulses_us[4];
+
+/** @brief Elementy vlastních délek pulzů (pro propagate callback). */
+static CFGELM *g_cmt_cfg_custom_pulses_elm[4];
+
+/**
+ * @brief Přepíše zrcadlo g_cmt_cfg_custom_pulses_us z g_cmt.mz_custom_pulses.
+ */
+static void cmt_cfg_custom_pulses_sync(void)
+{
+    g_cmt_cfg_custom_pulses_us[0] = (float)(g_cmt.mz_custom_pulses.long_pulse.high * 1e6);
+    g_cmt_cfg_custom_pulses_us[1] = (float)(g_cmt.mz_custom_pulses.long_pulse.low * 1e6);
+    g_cmt_cfg_custom_pulses_us[2] = (float)(g_cmt.mz_custom_pulses.short_pulse.high * 1e6);
+    g_cmt_cfg_custom_pulses_us[3] = (float)(g_cmt.mz_custom_pulses.short_pulse.low * 1e6);
+}
+
+/**
+ * @brief Propagate callback klíčů mz_custom_pulse_*_us: složí výchozí vlastní délky pulzů.
+ *
+ * Volá se pro každý ze 4 klíčů; čte vždy všechny čtyři elementy, takže
+ * po posledním z nich platí hodnoty z INI. Neplatná kombinace (nemůže
+ * nastat díky rozsahu elementů) ponechá předchozí délky.
+ *
+ * @param e Měněný element (nepoužívá se).
+ * @param data Nepoužívá se.
+ */
+static void cmt_propagatecfg_custom_pulses(void *e, void *data)
+{
+    (void)e;
+    (void)data;
+    double us[4];
+    for (int i = 0; i < 4; i++)
+    {
+        us[i] = (g_cmt_cfg_custom_pulses_elm[i]) ? cfgelement_get_float_value(g_cmt_cfg_custom_pulses_elm[i])
+                                                 : g_cmt_default_custom_pulses_us[i];
+    };
+    mztape_pulses_set_us(&g_cmt.mz_custom_pulses, us[0], us[1], us[2], us[3]);
+    cmt_cfg_custom_pulses_sync();
+    ui_cmt_window_update();
+}
+
+/**
+ * @brief Save callback modulu CMT: před zápisem INI srovná zrcadlo vlastních pulzů.
+ *
+ * @param m Modul (nepoužívá se).
+ * @param data Nepoužívá se.
+ */
+static void cmt_cfg_save_cb(void *m, void *data)
+{
+    (void)m;
+    (void)data;
+    cmt_cfg_custom_pulses_sync();
 }
 
 void cmt_rear_dip_switch_cmt_inverted_polarity(unsigned value)
@@ -588,16 +979,38 @@ void cmt_init(void)
 
     CFGMOD *cmod = cfgroot_register_new_module(g_cfgmain, "CMT");
 
+    /* výchozí vlastní délky pulzů platí, i když INI klíče chybí */
+    mztape_pulses_set_us(&g_cmt.mz_custom_pulses,
+                         g_cmt_default_custom_pulses_us[0], g_cmt_default_custom_pulses_us[1],
+                         g_cmt_default_custom_pulses_us[2], g_cmt_default_custom_pulses_us[3]);
+    cmt_cfg_custom_pulses_sync();
+    cfgmodule_set_save_cb(cmod, cmt_cfg_save_cb, NULL);
+
     CFGELM *elm;
     elm = cfgmodule_register_new_element(cmod, "mz_cmtspeed", CFGENTYPE_KEYWORD, CMTSPEED_1_1,
                                          CMTSPEED_1_1, "SPEED_1/1",
                                          CMTSPEED_2_1, "SPEED_2/1",
+                                         CMTSPEED_2_1_CPM, "SPEED_2/1_CPM",
+                                         CMTSPEED_3_2, "SPEED_3/2",
                                          CMTSPEED_7_3, "SPEED_7/3",
                                          CMTSPEED_8_3, "SPEED_8/3",
                                          CMTSPEED_3_1, "SPEED_3/1",
+                                         CMTSPEED_9_7, "SPEED_9/7",
+                                         CMTSPEED_25_14, "SPEED_25/14",
+                                         CMTSPEED_CUSTOM, "SPEED_CUSTOM",
                                          -1);
     cfgelement_set_propagate_cb(elm, cmt_propagatecfg_cmt_speed, NULL);
     cfgelement_set_handlers(elm, NULL, (void *)&g_cmt.mz_cmtspeed);
+
+    /* vlastní délky pulzů pro SPEED_CUSTOM (µs, rozsah jako hlavička CMTSPEED) */
+    for (int i = 0; i < 4; i++)
+    {
+        elm = cfgmodule_register_new_element(cmod, g_cmt_cfg_custom_pulses_name[i], CFGENTYPE_FLOAT,
+                                             g_cmt_default_custom_pulses_us[i], 0.1, MZTAPE_PULSE_US_MAX);
+        g_cmt_cfg_custom_pulses_elm[i] = elm;
+        cfgelement_set_propagate_cb(elm, cmt_propagatecfg_custom_pulses, NULL);
+        cfgelement_set_handlers(elm, NULL, (void *)&g_cmt_cfg_custom_pulses_us[i]);
+    };
 
     elm = cfgmodule_register_new_element(cmod, "cmt_polarity_inverted", CFGENTYPE_BOOL, CMT_STREAM_POLARITY_NORMAL);
     // cfgelement_set_propagate_cb(elm, cmt_propagatecfg_inverted_polarity, NULL);
@@ -705,17 +1118,36 @@ static void cmt_ui_open_cb(baseui_fchooser_t *fch)
 
 void cmt_ui_open(bool play_immediately)
 {
-    baseui_fchooser_t *fch = baseui_filechooser_open_file(_("Select CMT file to open"), g_ui_cmt_filters, NULL, NULL, g_cmt.last_filename, cmt_ui_open_cb, GINT_TO_POINTER(play_immediately));
+    baseui_fchooser_t *fch = baseui_filechooser_open_file(BASEUI_FCHOOSER_CAT_CMT, _("Select CMT file to open"), g_ui_cmt_filters, NULL, NULL, g_cmt.last_filename, cmt_ui_open_cb, GINT_TO_POINTER(play_immediately));
     if (!fch)
     {
         fprintf(stderr, "%s(%d): filechooser error\n", __FILE__, __LINE__);
     };
 }
 
+/**
+ * @brief Přepočítá výstupní signál z pásky (g_cmt.output) k aktuálnímu GDG času.
+ *
+ * Z rozdílu gdg_get_total_ticks() - g_cmt.start_time zjistí od cmtext bloku
+ * aktuální úroveň signálu a stav přehrávání bloku. Na konci bloku přejde na
+ * další blok kontejneru, na konci pásky zavolá cmt_stop(). Volá se z čtení
+ * PC5 8255 (cmt_read_data), z cmt_screen_done_period() a z mzarch při
+ * opuštění pauzy emulace.
+ *
+ * Bez vložené pásky (ext == NULL) se nic nepočítá a output se nemění.
+ * Tento test je defenzivní: platný stav bez pásky je vždy STOP (viz
+ * invariant st_CMT), ale funkce se volá bezpodmínečně (mzarch.c při
+ * opuštění pauzy), takže nesmí dereferencovat NULL ani při porušeném
+ * invariantu (dříve pád po načtení snapshotu pořízeného během přehrávání).
+ *
+ * @pre Voláno z emulátorového vlákna.
+ * @post Při PLAY bez pauzy s vloženou páskou odpovídá g_cmt.output poloze
+ *       pásky; může dojít k přechodu na další blok nebo do STOP.
+ */
 void cmt_update_output(void)
 {
 
-    if ((!CMT_TEST_PLAY) || (CMT_TEST_PAUSED))
+    if ((!CMT_TEST_FILLED) || (!CMT_TEST_PLAY) || (CMT_TEST_PAUSED))
         return;
 
     uint64_t play_ticks = gdg_get_total_ticks() - g_cmt.start_time;
@@ -798,25 +1230,21 @@ void cmt_screen_done_period(void)
                 g_cmt.recording_to_stream = 1;
                 if (g_cmt.cpu_boost == CMT_CPU_BOOST_ENABLED)
                 {
-                    emulator_max_speed(true);
+                    emulator_max_speed_boost(true);
                 };
             };
         }
-        else
+        else if (g_cmt.cpu_boost == CMT_CPU_BOOST_ENABLED)
         {
+            /* Program 5 s nezapisuje -> MAX SPEED od boostu dočasně pryč,
+             * při další aktivitě zpět. Uživatelskou MAX SPEED nemění. */
             if ((gdg_get_total_ticks() - g_cmt.recording_last_event) > (5 * GDGCLK_BASE))
             {
-                if ((g_cmt.cpu_boost == CMT_CPU_BOOST_ENABLED) && (EMULATOR_TEST_MAX_SPEED))
-                {
-                    emulator_max_speed(false);
-                };
+                emulator_max_speed_boost(false);
             }
             else
             {
-                if ((g_cmt.cpu_boost == CMT_CPU_BOOST_ENABLED) && (!EMULATOR_TEST_MAX_SPEED))
-                {
-                    emulator_max_speed(true);
-                };
+                emulator_max_speed_boost(true);
             };
         };
     };
@@ -828,9 +1256,20 @@ int cmt_read_data(void)
     return g_cmt.output;
 }
 
+/**
+ * @brief Předá zápis signálu na pásku (PC1 8255) nahrávacímu rozšíření.
+ *
+ * Mimo nahrávání, v pauze nebo bez vložené pásky (defenzivní test, viz
+ * invariant st_CMT) nedělá nic.
+ *
+ * @param value Úroveň výstupu na pásku (bit 0); do cb_write jde invertovaná.
+ *
+ * @pre Voláno z emulátorového vlákna.
+ * @post Při RECORD bez pauzy je zaznamenán čas události (recording_last_event).
+ */
 void cmt_write_data(int value)
 {
-    if ((!CMT_TEST_RECORD) || (CMT_TEST_PAUSED))
+    if ((!CMT_TEST_FILLED) || (!CMT_TEST_RECORD) || (CMT_TEST_PAUSED))
         return;
     g_cmt.recording_last_event = gdg_get_total_ticks();
     uint64_t play_ticks = g_cmt.recording_last_event - g_cmt.start_time;
@@ -838,22 +1277,24 @@ void cmt_write_data(int value)
         g_cmt.ext->cb_write(play_ticks, ~value);
 }
 
+/**
+ * @brief Nastaví volbu cpu_boost (automatická MAX SPEED během přehrávání).
+ *
+ * Změnu hned promítne do rychlosti emulace přes cmt_cpu_boost_apply():
+ * zapnutí během aktivního transportu (PLAY/RECORD bez pauzy) zapne MAX
+ * SPEED, vypnutí vypne MAX SPEED jen tehdy, když ji zapnul cpu_boost.
+ * Dříve se při vypnutí volalo emulator_max_speed(false) a pauza transportu
+ * se neřešila (zapnutí v pauze hned zapnulo MAX SPEED).
+ *
+ * @param cpu_boost Nová hodnota volby.
+ *
+ * @pre Voláno z emulátorového vlákna nebo při pozastavené emulaci
+ *      (propagace konfigurace).
+ */
 void cmt_cpu_boost_set(en_CMT_CPU_BOOST cpu_boost)
 {
-
     g_cmt.cpu_boost = cpu_boost;
-
-    if (!CMT_TEST_STOP)
-    {
-        if (g_cmt.cpu_boost == CMT_CPU_BOOST_ENABLED)
-        {
-            emulator_max_speed(true);
-        }
-        else
-        {
-            emulator_max_speed(false);
-        };
-    };
+    cmt_cpu_boost_apply();
 }
 
 void cmt_mzfsize_check_set(en_CMT_MZFSIZE_CHECK mzfsize_check)

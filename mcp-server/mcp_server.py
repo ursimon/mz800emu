@@ -21,6 +21,7 @@ Výběr transportu je řízený env proměnnou ``MZ800EMU_TRANSPORT``:
     MZ800EMU_TCP_HOST=127.0.0.1 (pouze tcp)
     MZ800EMU_TCP_PORT=23800 (pouze tcp)
     MZ800EMU_EXE=./mz800emu.exe (pouze pipe)
+    MZ800EMU_WORK_DIR=<adresář> (pouze pipe, předá se jako --work-dir)
 
 Architektura:
 
@@ -71,6 +72,8 @@ Reference design:
 
 import asyncio
 import configparser
+import contextvars
+import functools
 import json
 import logging
 import logging.handlers
@@ -93,6 +96,12 @@ EMU_EXE: str = os.environ.get(
     str(Path(__file__).resolve().parent.parent / "mz800emu.exe"),
 )
 
+# Pracovní adresář spawnutého emulátoru (--work-dir) - kam jdou relativní
+# výstupy (CDL export při ukončení, trace, ...). Prázdné = výchozí
+# work_dir emulátoru. Relevantní pouze pro pipe transport; používají ho
+# testy, aby výstupy nevznikaly v kořeni repa.
+EMU_WORK_DIR: str = os.environ.get("MZ800EMU_WORK_DIR", "").strip()
+
 # Výběr transportu: pipe (default) nebo tcp.
 TRANSPORT_KIND: str = os.environ.get("MZ800EMU_TRANSPORT", "pipe").lower()
 
@@ -105,6 +114,25 @@ TCP_PORT: int = int(os.environ.get("MZ800EMU_TCP_PORT", "23800"))
 # Timeout per JSONL request - emu by měl odpovídat řádově do sekundy,
 # 30 s je bezpečná horní mez pro startup hello + první příkaz.
 SEND_TIMEOUT_S: float = 30.0
+
+# HID nástroje s držením (send_key, send_keys, send_keys_with_delays,
+# send_joystick) odpoví až po odehrání celé sekvence, která se měří ve
+# snímcích EMULACE. Při normální rychlosti je snímek 20 ms (PAL), při
+# zpomalené emulaci (např. zapnuté CDL) víc. Rezerva na snímek proto
+# počítá s emulací až 3x pomalejší než reálný čas (60 ms/snímek).
+HID_FRAME_TIMEOUT_S: float = 0.06
+
+
+def _hid_timeout_s(total_frames: int) -> float:
+    """Timeout požadavku HID nástroje pro sekvenci dlouhou ``total_frames``.
+
+    Args:
+        total_frames: součet snímků držení a mezer celé sekvence.
+
+    Returns:
+        ``SEND_TIMEOUT_S`` + ``total_frames`` x ``HID_FRAME_TIMEOUT_S``.
+    """
+    return SEND_TIMEOUT_S + max(0, int(total_frames)) * HID_FRAME_TIMEOUT_S
 
 # Max délka jednoho JSONL řádku (TCP transport). asyncio.StreamReader má
 # default limit 64 KiB; region_read smí číst až 65536 bajtů, base64 z toho
@@ -312,6 +340,111 @@ def _wire_truncate(line: str) -> str:
 mcp = FastMCP("mz800emu")
 
 
+#: Úložiště oznámení o restartu pro právě běžící tool call. Obal toolu
+#: (``_tool_with_restart_notice``) do něj na začátku volání vloží prázdný
+#: dict; ``_send_request`` při automatickém restartu zapíše oznámení sem,
+#: takže ho dostane právě to volání, které restart vyvolalo (i při souběžně
+#: běžících voláních - každé běží ve vlastním asyncio kontextu). Mimo tool
+#: call (čtení resource) je hodnota None a oznámení jde do globálního
+#: ``_restart_notice`` pro nejbližší tool.
+_restart_holder: contextvars.ContextVar[Optional[dict]] = \
+    contextvars.ContextVar("mz800emu_restart_holder", default=None)
+
+
+def _take_restart_notice(holder: Optional[dict]) -> Optional[dict]:
+    """Vyzvedne oznámení o restartu pro dokončovaný tool call.
+
+    Přednost má oznámení zapsané do ``holder`` (restart vyvolal tento
+    call), jinak čekající globální ``_restart_notice`` (restart vyvolalo
+    čtení resource). Vyzvednuté oznámení se smaže.
+
+    Args:
+        holder: dict tohoto volání (z ``_restart_holder``), nebo None.
+
+    Returns:
+        Oznámení ``{"restarted": True, "restart_reason": str}``, nebo None.
+    """
+    global _restart_notice
+    if holder is not None and holder.get("notice") is not None:
+        return holder.pop("notice")
+    notice = _restart_notice
+    _restart_notice = None
+    return notice
+
+
+def _attach_restart_notice(result: str, notice: Optional[dict]) -> str:
+    """Přidá k výsledku toolu oznámení o automatickém restartu emulátoru.
+
+    Tvar výsledku se mění jen při restartu: JSON objekt dostane pole
+    ``restarted: true`` a ``restart_reason``; jiný výsledek se zabalí do
+    ``{"result": <původní>, "restarted": true, "restart_reason": ...}``.
+
+    Args:
+        result: výsledek toolu (JSON text).
+        notice: oznámení z ``_take_restart_notice``, nebo None.
+
+    Returns:
+        Původní výsledek, nebo výsledek doplněný o oznámení.
+    """
+    if notice is None:
+        return result
+    try:
+        obj = json.loads(result)
+    except (TypeError, ValueError):
+        obj = None
+    if isinstance(obj, dict):
+        obj.update(notice)
+        return json.dumps(obj)
+    return json.dumps({"result": obj if obj is not None else result,
+                       **notice})
+
+
+_fastmcp_tool_decorator = mcp.tool
+
+
+def _tool_with_restart_notice(*args: Any, **kwargs: Any):
+    """Náhrada ``mcp.tool()``: registruje tool obalený oznámením o restartu.
+
+    Signatura, jméno i docstring toolu zůstávají (``functools.wraps``,
+    FastMCP čte signaturu přes ``__wrapped__``), mění se jen výsledek -
+    viz ``_attach_restart_notice``. Všechny tooly jsou ``async`` a vracejí
+    ``str``. Modulový symbol toolu je obalená funkce (testy ho volají
+    přímo).
+
+    Když tool skončí výjimkou (např. požadavek po automatickém restartu
+    selže), oznámení se připojí k textu chyby
+    (``... [restarted: true; <důvod>]``), aby se neztratilo ani
+    nepřesunulo k jinému volání.
+    """
+    register = _fastmcp_tool_decorator(*args, **kwargs)
+
+    def decorator(fn):
+        @functools.wraps(fn)
+        async def wrapper(*a: Any, **kw: Any) -> str:
+            holder: dict = {}
+            token = _restart_holder.set(holder)
+            try:
+                result = await fn(*a, **kw)
+            except Exception as e:
+                notice = _take_restart_notice(holder)
+                if notice is None:
+                    raise
+                raise RuntimeError(
+                    f"{e} [restarted: true; {notice['restart_reason']}]"
+                ) from e
+            finally:
+                _restart_holder.reset(token)
+            return _attach_restart_notice(result,
+                                          _take_restart_notice(holder))
+        register(wrapper)
+        return wrapper
+
+    return decorator
+
+
+mcp.tool = _tool_with_restart_notice
+
+
 # === Transport abstrakce =============================================
 # Polymorphic API nad spawned subprocess pipe vs TCP socket konexí.
 # Reader task volá ``read_line``, ``_send_request`` volá ``send_line``.
@@ -334,7 +467,13 @@ class _Transport:
       předchozího ``connect``).
     - ``is_alive()`` vrací False pokud transport ztratil konexi (EOF,
       reset, subprocess exit).
+    - ``expected_exit`` je True, jen když konec backendu vyvolal sám
+      wrapper (``emu_stop``, ``_shutdown_emu``); jinak je konec nečekaný
+      a další volání to klientovi oznámí (``restarted``).
     """
+
+    #: True = konec backendu vyžádal wrapper (emu_stop / shutdown).
+    expected_exit: bool = False
 
     async def connect(self) -> None:
         """Naváže konexi (spawn subprocess NEBO open socket)."""
@@ -364,6 +503,10 @@ class _Transport:
         """Vrátí True dokud je konexe živá."""
         raise NotImplementedError
 
+    async def exit_reason(self) -> str:
+        """Popis, proč backend skončil (pro chybové hlášky, anglicky)."""
+        return "connection closed"
+
 
 class _PipeTransport(_Transport):
     """Transport spawnující ``mz800emu.exe --mcp-pipe`` jako subprocess.
@@ -392,10 +535,12 @@ class _PipeTransport(_Transport):
                 f"mz800emu binary not found at {self.exe_path} "
                 f"(set MZ800EMU_EXE env var to override)"
             )
-        log.info("spawning emu: %s --mcp-pipe --headless --no-first-run-windows",
-                 self.exe_path)
+        args = [str(exe), "--mcp-pipe", "--headless", "--no-first-run-windows"]
+        if EMU_WORK_DIR:
+            args.append(f"--work-dir={EMU_WORK_DIR}")
+        log.info("spawning emu: %s", " ".join(args))
         self.process = subprocess.Popen(
-            [str(exe), "--mcp-pipe", "--headless", "--no-first-run-windows"],
+            args,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -444,6 +589,34 @@ class _PipeTransport(_Transport):
 
     def is_alive(self) -> bool:
         return self.process is not None and self.process.poll() is None
+
+    async def exit_reason(self) -> str:
+        """Popis konce child procesu včetně exit kódu.
+
+        Po EOF na stdout proces obvykle už skončil, ale exit kód nemusí
+        být ještě k dispozici - čeká se na něj nejvýše 2 s (v thread
+        poolu, neblokuje event loop). Exit kód nad 0x7FFFFFFF (Windows
+        NTSTATUS, např. 0xC0000005 = access violation) nebo záporný (signál
+        na POSIX) se vypíše i hexa.
+
+        Returns:
+            Např. ``"exit code 3221225477 = 0xC0000005"``,
+            ``"exit code 0"`` nebo ``"process still running, stdout closed"``.
+        """
+        proc = self.process
+        if proc is None:
+            return "process not running"
+        rc = proc.poll()
+        if rc is None:
+            loop = asyncio.get_event_loop()
+            try:
+                rc = await loop.run_in_executor(
+                    None, functools.partial(proc.wait, timeout=2.0))
+            except subprocess.TimeoutExpired:
+                return "process still running, stdout closed"
+        if rc > 0x7FFFFFFF or rc < 0:
+            return f"exit code {rc} = 0x{rc & 0xFFFFFFFF:08X}"
+        return f"exit code {rc}"
 
 
 class _TcpTransport(_Transport):
@@ -535,6 +708,10 @@ class _TcpTransport(_Transport):
     def is_alive(self) -> bool:
         return self._alive
 
+    async def exit_reason(self) -> str:
+        """Popis konce TCP spojení (exit kód GUI emulátoru není znám)."""
+        return f"TCP connection to {self.host}:{self.port} closed"
+
 
 def _create_transport() -> _Transport:
     """Vytvoří správnou transport instanci podle ``MZ800EMU_TRANSPORT``.
@@ -569,6 +746,21 @@ _event_queue: Optional[asyncio.Queue] = None
 _next_req_id: int = 1
 _send_lock: Optional[asyncio.Lock] = None
 
+#: Popis posledního NEČEKANÉHO konce backendu (pád procesu, zavřené TCP),
+#: nebo None. Nastavuje reader task, maže ho automatický restart
+#: v ``_send_request`` a ``emu_start``. ``emu_status`` ho hlásí jako
+#: ``last_exit``.
+_last_exit: Optional[str] = None
+
+#: Oznámení, že ``_send_request`` po nečekaném konci backendu automaticky
+#: spustil nový emulátor (pipe) nebo znovu navázal TCP spojení, pokud restart
+#: vyvolalo volání mimo tool (čtení resource). Vyzvedne ho nejbližší
+#: dokončený tool. Restart vyvolaný toolem jde přes ``_restart_holder``.
+_restart_notice: Optional[dict[str, Any]] = None
+
+#: Klíč sentinelu, který reader task při konci transportu vloží do front.
+_TRANSPORT_CLOSED_KEY = "_transport_closed"
+
 
 # === Bridge core =====================================================
 
@@ -593,7 +785,11 @@ async def _stdout_reader_task() -> None:
     Side effects:
 
     - Modifikuje ``_response_queue`` / ``_event_queue``.
-    - Při EOF (= emu skončil / TCP konexe shozená) task spontánně končí.
+    - Při EOF (= emu skončil / TCP konexe shozená) task spontánně končí
+      a do obou front vloží sentinel s chybou (``_signal_transport_closed``),
+      takže čekající ``_send_request`` / čtení hello skončí hned chybou
+      "emulator process exited ..." místo timeoutu. Nečekaný konec se
+      zapíše do ``_last_exit``.
 
     Postconditions:
 
@@ -601,9 +797,18 @@ async def _stdout_reader_task() -> None:
     """
     global _transport
     log.info("stdout reader task started")
+    # Fronty a transport tohoto spojení - _ensure_connected je při
+    # reconnectu nahradí novými, sentinel ale patří do těchto.
+    transport = _transport
+    resp_queue = _response_queue
+    event_queue = _event_queue
     try:
-        while _transport is not None and _transport.is_alive():
-            line = await _transport.read_line()
+        # Čte se až do EOF (ne do is_alive()): proces může skončit dřív,
+        # než reader vybere poslední odpovědi z bufferu stdout (např.
+        # odpověď na shutdown / emu_stop). Čte se z transportu tohoto
+        # spojení, ne z globálního _transport (ten mohl reconnect nahradit).
+        while transport is not None:
+            line = await transport.read_line()
             if line is None:
                 # EOF na transportu - emu skončil nebo TCP konexe
                 # shozená.
@@ -635,6 +840,46 @@ async def _stdout_reader_task() -> None:
         raise
     except Exception as e:
         log.exception("stdout reader task selhal: %s", e)
+    await _signal_transport_closed(transport, resp_queue, event_queue)
+
+
+async def _signal_transport_closed(transport: Optional[_Transport],
+                                   resp_queue: Optional[asyncio.Queue],
+                                   event_queue: Optional[asyncio.Queue]) -> None:
+    """Oznámí konec transportu čekajícím požadavkům (sentinel do front).
+
+    Do response i event fronty spojení vloží zprávu
+    ``{"_transport_closed": True, "error": "emulator process exited
+    (...)"}``. ``_send_request`` i ``_read_hello_with_filter`` ji převedou
+    na ``RuntimeError``. Pokud konec nevyžádal wrapper
+    (``transport.expected_exit`` je False), zapíše popis do ``_last_exit``.
+
+    Args:
+        transport: transport, jehož reader právě skončil.
+        resp_queue: response fronta tohoto spojení.
+        event_queue: event fronta tohoto spojení.
+
+    Side effects:
+
+    - Plní fronty, může nastavit ``_last_exit``, loguje.
+    """
+    global _last_exit
+    if transport is None:
+        return
+    reason = await transport.exit_reason()
+    if isinstance(transport, _TcpTransport):
+        error = f"emulator connection closed ({reason})"
+    else:
+        error = f"emulator process exited ({reason})"
+    sentinel = {_TRANSPORT_CLOSED_KEY: True, "error": error}
+    for q in (resp_queue, event_queue):
+        if q is not None:
+            q.put_nowait(dict(sentinel))
+    if transport.expected_exit:
+        log.info("backend ended as requested: %s", error)
+    else:
+        _last_exit = error
+        log.warning("backend ended unexpectedly: %s", error)
 
 
 async def _ensure_connected() -> None:
@@ -710,19 +955,23 @@ async def _read_hello_with_filter(timeout_sec: float) -> dict[str, Any]:
 
     Raises:
         TimeoutError: pokud hello nedorazí do timeout.
+        RuntimeError: pokud backend skončil dřív, než hello poslal.
     """
     if _event_queue is None:
         raise RuntimeError("_event_queue not initialized")
     try:
         msg = await asyncio.wait_for(_event_queue.get(), timeout=timeout_sec)
-        return msg
     except asyncio.TimeoutError:
         raise TimeoutError(
             f"emu hello timeout after {timeout_sec}s")
+    if msg.get(_TRANSPORT_CLOSED_KEY):
+        raise RuntimeError(f"{msg['error']} before hello")
+    return msg
 
 
 async def _send_request(cmd: str,
-                        data: Optional[dict] = None) -> dict[str, Any]:
+                        data: Optional[dict] = None,
+                        timeout_s: Optional[float] = None) -> dict[str, Any]:
     """Pošle JSONL REQUEST emu backendu a čeká na synchronní response.
 
     Pokud transport ještě není navázaný, lazy ho připojí přes
@@ -733,25 +982,60 @@ async def _send_request(cmd: str,
             ``src/emulator/mcp/dispatch.c``).
         data: volitelný payload (např. ``{"addr": 0xE800, "len": 16}``
             pro ``mem_read``).
+        timeout_s: limit čekání na response v sekundách; ``None`` =
+            ``SEND_TIMEOUT_S``. Delší limit potřebují příkazy, které
+            odpoví až po odehrání sekvence (HID, viz ``_hid_timeout_s``).
 
     Returns:
         Dict s wire formátem response: ``{"req_id": N, "success": bool,
         "data": {...}, "error": "..."?}``.
 
     Raises:
-        RuntimeError: timeout, out-of-order response, nebo connect
-            failure.
+        RuntimeError: timeout, konec backendu během čekání (hned, ne až
+            po timeoutu: "emulator process exited (exit code ...)"),
+            out-of-order response, nebo connect failure.
 
     Side effects:
 
     - Inkrementuje ``_next_req_id``.
     - Zapisuje na transport pod ``_send_lock`` (serializace souběžných
       tool callů).
+    - Pokud předchozí backend nečekaně skončil, spustí nový emulátor
+      (pipe) / znovu se připojí (tcp) a připraví oznámení o restartu:
+      do ``_restart_holder`` právě běžícího toolu (klient ho uvidí ve
+      výsledku nebo chybě tohoto volání jako ``restarted: true``), mimo
+      tool call do ``_restart_notice`` pro nejbližší tool.
     """
-    global _next_req_id
+    global _next_req_id, _last_exit, _restart_notice
 
     if _transport is None or not _transport.is_alive():
+        prev = _transport
+        lost: Optional[str] = None
+        if prev is not None and not prev.expected_exit:
+            # Reader task nemusel EOF ještě zpracovat - důvod případně
+            # zjistíme přímo z mrtvého transportu.
+            lost = _last_exit or (await prev.exit_reason())
         await _ensure_connected()
+        if lost is not None:
+            _last_exit = None
+            what = ("reconnected to the emulator (the GUI emulator keeps "
+                    "its own state)"
+                    if isinstance(_transport, _TcpTransport)
+                    else "started a fresh emulator process "
+                         "(RAM, registers, breakpoints and inserted media "
+                         "were reset)")
+            notice = {
+                "restarted": True,
+                "restart_reason": f"previous backend ended unexpectedly "
+                                  f"({lost}); {what}",
+            }
+            holder = _restart_holder.get()
+            if holder is not None:
+                holder["notice"] = notice
+            else:
+                _restart_notice = notice
+            log.warning("auto-restart after unexpected backend end: %s",
+                        lost)
 
     assert _send_lock is not None
     assert _response_queue is not None
@@ -777,19 +1061,32 @@ async def _send_request(cmd: str,
         # (bug 0011). Stale response (req_id != náš) proto zahazujeme a
         # čekáme dál až do společného deadline - self-heal desyncu.
         loop = asyncio.get_event_loop()
-        deadline = loop.time() + SEND_TIMEOUT_S
+        limit_s = SEND_TIMEOUT_S if timeout_s is None else float(timeout_s)
+        deadline = loop.time() + limit_s
         while True:
             remaining = deadline - loop.time()
             if remaining <= 0:
                 raise RuntimeError(
-                    f"emu request timeout after {SEND_TIMEOUT_S}s (cmd={cmd})")
+                    f"emu request timeout after {limit_s:g}s (cmd={cmd})")
             try:
                 resp = await asyncio.wait_for(
                     _response_queue.get(), timeout=remaining)
             except asyncio.TimeoutError as e:
                 raise RuntimeError(
-                    f"emu request timeout after {SEND_TIMEOUT_S}s (cmd={cmd})"
+                    f"emu request timeout after {limit_s:g}s (cmd={cmd})"
                 ) from e
+            if resp.get(_TRANSPORT_CLOSED_KEY):
+                # Backend skončil (pád procesu / zavřené TCP) - odpověď
+                # nepřijde, nečekáme do timeoutu.
+                if isinstance(_transport, _TcpTransport):
+                    hint = ("the GUI emulator may still be running with its "
+                            "state; the next call reconnects")
+                else:
+                    hint = ("emulator state is lost; the next call starts "
+                            "a fresh emulator")
+                raise RuntimeError(
+                    f"{resp['error']} while waiting for the response "
+                    f"(cmd={cmd}); {hint}")
             # Pozn.: RX wire trace se loguje v _stdout_reader_task (= jediný
             # čtecí bod), ne tady, aby se response neloggovala dvakrát a aby
             # se zachytily i async broadcasty bez req_id.
@@ -833,6 +1130,9 @@ async def _shutdown_emu() -> None:
 
     if _transport is None:
         return
+
+    # Konec backendu vyžádal wrapper - reader ho nesmí hlásit jako pád.
+    _transport.expected_exit = True
 
     # V pipe módu posíláme shutdown (= killne child). V TCP módu NE -
     # nechceme killnout live GUI session uživatele.
@@ -878,10 +1178,18 @@ async def emu_status() -> str:
     Returns JSON with fields ``running`` (bool), ``paused`` (bool) and
     optionally other state fields (frame counter, total cycles) when
     emulator is alive. If the transport has not been connected yet or
-    has been closed, returns ``{"running": false, "connected": false}``.
+    has been closed, returns ``{"running": false, "connected": false}``;
+    when the backend ended unexpectedly (emulator process crashed or
+    exited, TCP connection dropped), the field ``last_exit`` describes it
+    (e.g. ``"emulator process exited (exit code 3221225477 =
+    0xC0000005)"``). The next tool call that needs the emulator starts a
+    fresh one and its result carries ``restarted: true``.
     """
     if _transport is None or not _transport.is_alive():
-        return json.dumps({"running": False, "connected": False})
+        status: dict[str, Any] = {"running": False, "connected": False}
+        if _last_exit is not None:
+            status["last_exit"] = _last_exit
+        return json.dumps(status)
 
     resp = await _send_request("get_state")
     return json.dumps(_data_or_error(resp))
@@ -1183,11 +1491,19 @@ async def emu_bp_list() -> str:
 
     Returns a JSON object ``{"count": int, "breakpoints": [...]}`` where
     each breakpoint record carries the fields:
-    ``id`` (int), ``addr`` (int), ``enabled`` (bool),
+    ``id`` (int), ``addr`` (int),
+    ``addr_end`` (int, inclusive upper bound, used only in ``RANGE`` mode),
+    ``addr_match_mode`` (string: ``SINGLE`` = only ``addr``, ``RANGE`` =
+    ``addr``..``addr_end``, ``MASK`` = ``(x & addr_mask) == (addr &
+    addr_mask)``; applies to ``PC_EXEC`` / ``MEM_R`` / ``MEM_W``),
+    ``addr_mask`` (int, used only in ``MASK`` mode),
+    ``enabled`` (bool),
     ``type`` (string, canonical UPPER_SNAKE: ``PC_EXEC`` / ``MEM_R`` /
     ``MEM_W`` / ``IORQ_R`` / ``IORQ_W`` / ...),
     ``zone`` (string, memory zone: ``CPU_VIEW`` / ``RAM`` / ...),
     ``bank_id`` (int, bank index for ``MMEXT_BANK`` zone),
+    ``bank_id_end`` / ``bank_match_mode`` / ``bank_id_mask`` (bank range,
+    same meaning as the ``addr_*`` triple, applied to ``bank_id``),
     ``hits`` (int, trigger counter),
     ``condition`` (string or null if unconditional).
     """
@@ -1339,7 +1655,9 @@ async def emu_run_until_addr(addr: int, max_cycles: int = 10_000_000) -> str:
     ``max_cycles`` argument is reserved for future timeout support).
 
     The emulator must be paused before calling this tool. If it is
-    already running, the backend returns an error.
+    running, the call returns an error ("Emulator is running ...") and
+    the emulator keeps running unchanged; call ``emu_pause`` first.
+    (A freshly started emulator runs.)
 
     Args:
         addr: target Z80 PC address (0-65535).
@@ -1429,6 +1747,12 @@ async def emu_snapshot_save_buffer(description: str = "") -> str:
 async def emu_snapshot_load(path: str) -> str:
     """Restore emulator state from a .mzs snapshot file on disk.
 
+    The emulator must be paused (call ``emu_pause`` first; a freshly
+    started emulator runs). Otherwise the call returns the error
+    "snapshot_load failed: Emulator is not paused ..." and nothing is
+    loaded. Other failures name the reason too (e.g. I/O error,
+    incompatible architecture).
+
     After successful load the emulator stays paused at the snapshot's
     captured PC. Call ``emu_get_registers`` or ``emu_status`` to verify
     the post-load state.
@@ -1455,12 +1779,17 @@ async def emu_snapshot_load_buffer(bytes_b64: str) -> str:
     The buffer is typically produced by ``emu_snapshot_save_buffer`` in
     an earlier session.
 
+    The emulator must be paused (call ``emu_pause`` first), the same as
+    for ``emu_snapshot_load``; otherwise the error says "Emulator is not
+    paused".
+
     Args:
         bytes_b64: base64-encoded .mzs ZIP content.
 
     Returns:
         JSON ``{"size": <int>, "ok": true, "result_code": 0}`` on success
-        or ``{"error": "..."}`` if the buffer is invalid.
+        or ``{"error": "..."}`` naming the reason (buffer invalid,
+        emulator not paused, ...).
     """
     if not isinstance(bytes_b64, str) or bytes_b64 == "":
         return json.dumps({"error": "bytes_b64 must be a non-empty string"})
@@ -1737,8 +2066,9 @@ async def emu_cmt_stop() -> str:
     """Stop the REAL cassette tape transport (PLAY or RECORD -> STOP).
 
     Stops playback or recording and rewinds the transport state machine.
-    No-op if the tape is already stopped or nothing is loaded. Sensitive:
-    changes emulator state (MCP action).
+    No-op if the tape is already stopped. Without a loaded tape it still
+    puts the transport into STOP (e.g. a playing state restored from a
+    snapshot). Sensitive: changes emulator state (MCP action).
 
     Returns:
         JSON ``{"ok": true, "action": "stop"}`` on success or
@@ -1851,8 +2181,9 @@ async def emu_cmt_hack_set(enabled: bool) -> str:
 
 # CMT-B - tape speed ratio keys -> en_CMTSPEED integer values.
 # The emulator enum (cmtspeed.h) is: 1_1=1, 2_1=2, 2_1_cpm=3, 3_1=4,
-# 3_2=5, 7_3=6, 8_3=7, 9_7=8, 25_14=9. We expose stable string ratio
-# keys plus the raw int for clients that prefer numeric.
+# 3_2=5, 7_3=6, 8_3=7, 9_7=8, 25_14=9, custom=10 (custom pulse lengths,
+# see pulses_us). We expose stable string ratio keys plus the raw int for
+# clients that prefer numeric.
 _CMT_SPEED_KEYS = {
     "1:1": 1,
     "2:1": 2,
@@ -1863,21 +2194,27 @@ _CMT_SPEED_KEYS = {
     "8:3": 7,
     "9:7": 8,
     "25:14": 9,
+    "custom": 10,
 }
 
+# en_CMTSPEED value of custom pulse lengths (CMTSPEED_CUSTOM).
+_CMT_SPEED_CUSTOM = 10
 
-def _cmt_resolve_speed(speed) -> int:
-    """Resolve a CMT speed argument to the en_CMTSPEED integer (1..9).
+
+def _cmt_resolve_speed(speed, allow_custom: bool = True) -> int:
+    """Resolve a CMT speed argument to the en_CMTSPEED integer.
 
     Accepts either a ratio string key ("1:1", "2:1", "2:1_cpm", "3:1",
-    "3:2", "7:3", "8:3", "9:7", "25:14") or an integer / numeric string
-    in range 1..9. Returns 0 for anything unrecognized (the backend then
-    rejects it).
+    "3:2", "7:3", "8:3", "9:7", "25:14", "custom") or an integer /
+    numeric string in range 1..10 (10 = custom pulse lengths, only when
+    ``allow_custom``). Returns 0 for anything unrecognized (the backend
+    then rejects it).
     """
     if isinstance(speed, str):
         key = speed.strip().lower()
         if key in _CMT_SPEED_KEYS:
-            return _CMT_SPEED_KEYS[key]
+            v = _CMT_SPEED_KEYS[key]
+            return v if (allow_custom or v != _CMT_SPEED_CUSTOM) else 0
         try:
             speed = int(key)
         except ValueError:
@@ -1886,38 +2223,95 @@ def _cmt_resolve_speed(speed) -> int:
         v = int(speed)
     except (TypeError, ValueError):
         return 0
-    return v if 1 <= v <= 9 else 0
+    top = _CMT_SPEED_CUSTOM if allow_custom else 9
+    return v if 1 <= v <= top else 0
+
+
+def _cmt_resolve_pulses(pulses_us):
+    """Validate custom tape pulse lengths.
+
+    Returns a list of 4 floats (microseconds: long high, long low, short
+    high, short low - the order of the UniCMT CMTSPEED header) or None
+    when the argument is not a sequence of 4 numbers in (0, 65535].
+    A JSON string with such a list is accepted too.
+    """
+    if isinstance(pulses_us, str):
+        try:
+            pulses_us = json.loads(pulses_us)
+        except ValueError:
+            return None
+    if not isinstance(pulses_us, (list, tuple)) or len(pulses_us) != 4:
+        return None
+    out = []
+    for v in pulses_us:
+        if isinstance(v, bool):
+            return None
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return None
+        if not (0 < f <= 65535):
+            return None
+        out.append(f)
+    return out
 
 
 @mcp.tool()
-async def emu_cmt_set_speed(speed) -> str:
-    """Set the REAL cassette tape playback/record speed ratio.
+async def emu_cmt_set_speed(speed=None, pulses_us=None) -> str:
+    """Set the default playback speed of the virtual cassette (Virtual CMT).
 
     The Sharp MZ tape can run at several speed ratios relative to the
-    1200 Bd baseline. Accepts either a ratio string key or the raw
-    en_CMTSPEED integer:
+    1200 Bd baseline, or with custom pulse lengths. Pass either ``speed``
+    (ratio string key or the raw en_CMTSPEED integer) or ``pulses_us``:
 
     * "1:1" (1) - standard 1200 Bd
     * "2:1" (2), "2:1_cpm" (3), "3:1" (4), "3:2" (5)
     * "7:3" (6, Intercopy 10.2), "8:3" (7, CP/M cmt.com)
     * "9:7" (8), "25:14" (9)
+    * "custom" (10) - the custom pulse lengths stored earlier
+    * ``pulses_us=[long_high, long_low, short_high, short_low]`` - custom
+      pulse lengths in microseconds, the order of the UniCMT CMTSPEED
+      header (UniCMT 3x = [156, 164, 80, 92]); each in (0, 65535]. The
+      default speed switches to custom (10) and the lengths are stored.
 
-    The change applies to the default tape speed; per-block overrides are
-    set with ``emu_cmt_tape_set_block_speed``. Reflected as ``cmtspeed``
-    in ``emulator://periph/cmt``. Sensitive: changes emulator state.
+    The change applies to blocks with the default speed; per-block
+    overrides are set with ``emu_cmt_tape_set_block_speed`` (blocks after
+    a UniCMT CMTSPEED header in an .mzt already have their own speed).
+    Reflected as ``cmtspeed``, ``default_pulses_us`` and
+    ``custom_pulses_us`` in ``emulator://periph/cmt``. Sensitive: changes
+    emulator state.
 
     Args:
-        speed: ratio string ("2:1") or int (2).
+        speed: ratio string ("2:1") or int (2); omit when using pulses_us.
+        pulses_us: list of 4 numbers (microseconds); omit when using speed.
 
     Returns:
-        JSON ``{"ok": true, "property": "speed", "value": int}`` or
-        ``{"error": "..."}`` on failure (unknown ratio / value).
+        JSON ``{"ok": true, "property": "speed", "value": int}`` or, for
+        ``pulses_us``, ``{"ok": true, "property": "custom_pulses",
+        "pulses_us": [...]}``; ``{"error": "..."}`` on failure.
     """
+    if pulses_us is not None:
+        if speed not in (None, "", "custom", _CMT_SPEED_CUSTOM):
+            return json.dumps(
+                {"error": "Pass either speed or pulses_us, not both"})
+        pulses = _cmt_resolve_pulses(pulses_us)
+        if pulses is None:
+            return json.dumps(
+                {"error": f"Invalid pulses_us: {pulses_us!r} (use 4 "
+                          f"numbers in microseconds, each in (0, 65535])"})
+        resp = await _send_request(
+            "cmt_set_property",
+            {"property": "custom_pulses", "pulses_us": pulses})
+        if not resp.get("success", False):
+            return json.dumps(
+                {"error": resp.get("error", "cmt_set_speed failed")})
+        return json.dumps(_data_or_error(resp))
     value = _cmt_resolve_speed(speed)
     if value == 0:
         return json.dumps(
             {"error": f"Invalid CMT speed: {speed!r} "
-                      f"(use one of {sorted(_CMT_SPEED_KEYS)} or 1..9)"})
+                      f"(use one of {sorted(_CMT_SPEED_KEYS)}, 1..10 "
+                      f"or pulses_us)"})
     resp = await _send_request(
         "cmt_set_property", {"property": "speed", "value": value})
     if not resp.get("success", False):
@@ -2021,9 +2415,14 @@ async def emu_cmt_open(path: str, play_immediately: bool = False) -> str:
         play_immediately: if True, start playback right after opening.
 
     Returns:
-        JSON ``{"ok": true, "path": str, "playing": bool}`` on success
-        or ``{"error": "..."}`` on failure (unknown extension / open
-        error).
+        JSON ``{"ok": true, "path": str, "playing": bool, "state": str,
+        "paused": bool}`` on success or ``{"error": "..."}`` on failure
+        (unknown extension / open error). ``playing``, ``state``
+        (``"stop"`` / ``"play"`` / ``"record"``) and ``paused`` report the
+        actual transport state after the operation (same meaning as in
+        ``emulator://periph/cmt``); ``playing`` is true only for PLAY
+        without pause. When ``play_immediately`` was requested but the tape
+        is not playing afterwards, the result also carries ``warning``.
     """
     if not path:
         return json.dumps({"error": "Missing required field: path"})
@@ -2039,18 +2438,23 @@ async def emu_cmt_open(path: str, play_immediately: bool = False) -> str:
 async def emu_cmt_tape_seek(block_id: int) -> str:
     """Seek the REAL tape to a specific block (SIMPLE_TAPE containers).
 
-    Multi-file tape containers (SIMPLE_TAPE) expose individual blocks;
-    this positions the tape at block ``block_id`` (0-based). For a
-    single-file container there is just block 0. Requires a loaded tape.
-    The list of blocks is in ``emulator://periph/cmt/tape``. Sensitive:
-    changes emulator state (MCP action).
+    Multi-file tape containers (SIMPLE_TAPE: .mzt, .tap) expose
+    individual blocks; this positions the tape at block ``block_id``
+    (0-based). Single-file containers (SINGLE: a plain .mzf or .wav,
+    ``container_type`` 0 in ``emulator://periph/cmt/tape``) do NOT support
+    seeking - the call fails even for block 0. To start such a tape from
+    the beginning again, use ``emu_cmt_stop`` + ``emu_cmt_play`` (play
+    from STOP always starts at the beginning of the tape). Requires a
+    loaded tape. The list of blocks is in ``emulator://periph/cmt/tape``.
+    Sensitive: changes emulator state (MCP action).
 
     Args:
         block_id: 0-based block index to seek to.
 
     Returns:
         JSON ``{"ok": true, "block_id": int}`` on success or
-        ``{"error": "..."}`` on failure (no tape / bad block).
+        ``{"error": "..."}`` on failure (no tape, SINGLE container or
+        block out of range).
     """
     resp = await _send_request("cmt_tape_seek", {"block_id": int(block_id)})
     if not resp.get("success", False):
@@ -2060,28 +2464,51 @@ async def emu_cmt_tape_seek(block_id: int) -> str:
 
 
 @mcp.tool()
-async def emu_cmt_tape_set_block_speed(block_id: int, speed) -> str:
+async def emu_cmt_tape_set_block_speed(block_id: int, speed=None,
+                                       pulses_us=None) -> str:
     """Set the playback speed of a single tape block (cmt speed only).
 
     Per-block speed override for SIMPLE_TAPE containers. Only the cmt
-    speed ratio is adjustable per block (no other per-block parameters).
-    ``speed`` accepts the same ratio string keys or int 1..9 as
-    ``emu_cmt_set_speed``. Requires a loaded tape. Sensitive: changes
-    emulator state (MCP action).
+    speed is adjustable per block (no other per-block parameters): pass
+    either ``speed`` (the same ratio string keys or int 1..9 as
+    ``emu_cmt_set_speed``) or ``pulses_us`` (custom pulse lengths in
+    microseconds, [long_high, long_low, short_high, short_low], the order
+    of the UniCMT CMTSPEED header; MZ blocks only). Requires a loaded
+    tape. The speed applies from the next opening of the block (advancing
+    to it during playback, ``emu_cmt_tape_seek``); the currently open
+    block is not changed. Sensitive: changes emulator state (MCP action).
 
     Args:
         block_id: 0-based block index.
-        speed: ratio string ("2:1") or int (2).
+        speed: ratio string ("2:1") or int (2); omit when using pulses_us.
+        pulses_us: list of 4 numbers (microseconds); omit when using speed.
 
     Returns:
-        JSON ``{"ok": true, "block_id": int, "speed": int}`` on success
+        JSON ``{"ok": true, "block_id": int, "speed": int}`` (with
+        ``"speed": 10`` and ``"pulses_us"`` for custom pulses) on success
         or ``{"error": "..."}`` on failure (no tape / bad speed).
     """
-    value = _cmt_resolve_speed(speed)
+    if pulses_us is not None:
+        if speed not in (None, "", "custom", _CMT_SPEED_CUSTOM):
+            return json.dumps(
+                {"error": "Pass either speed or pulses_us, not both"})
+        pulses = _cmt_resolve_pulses(pulses_us)
+        if pulses is None:
+            return json.dumps(
+                {"error": f"Invalid pulses_us: {pulses_us!r} (use 4 "
+                          f"numbers in microseconds, each in (0, 65535])"})
+        resp = await _send_request(
+            "cmt_tape_block_speed",
+            {"block_id": int(block_id), "pulses_us": pulses})
+        if not resp.get("success", False):
+            return json.dumps(
+                {"error": resp.get("error", "cmt_tape_set_block_speed failed")})
+        return json.dumps(_data_or_error(resp))
+    value = _cmt_resolve_speed(speed, allow_custom=False)
     if value == 0:
         return json.dumps(
             {"error": f"Invalid CMT speed: {speed!r} "
-                      f"(use one of {sorted(_CMT_SPEED_KEYS)} or 1..9)"})
+                      f"(use a ratio key, 1..9 or pulses_us)"})
     resp = await _send_request(
         "cmt_tape_block_speed",
         {"block_id": int(block_id), "speed": value})
@@ -3030,6 +3457,242 @@ async def emu_trace_save(channel: str, path: str = "") -> str:
     return json.dumps(_data_or_error(resp))
 
 
+# === video-capture Task 15 - Video recording Tools (5 + 1) ===========
+#
+# Lossless gameplay video recording (all builds: MZ-800, MZ-700 PAL/NTSC,
+# MZ-1500): ZMBV AVI + 48 kHz PCM
+# plus a ``<name>.cuts.json`` sidecar (segments, markers, state events).
+# Task 18 added ``emu_videorec_timebase`` (emulated / real-time timebase).
+# All six tools map 1:1 to the C dispatch commands ``videorec_*`` (dispatch.c), which run
+# on the emulator thread via ``DBGAPI_CMD_VIDEOREC``. Every success reply
+# carries the full recording status (see ``emu_videorec_status``).
+#
+# The complete agent workflow (start, play via send_keys, markers,
+# snapshot retake, stop, export to MP4) is documented in ONE place:
+# ``emulator://docs/videorec_workflow`` (docs/agent/videorec_workflow.md).
+
+#: Poll interval (seconds) of ``emu_videorec_stop(wait=True)``.
+_VIDEOREC_POLL_S = 0.1
+
+
+@mcp.tool()
+async def emu_videorec_start(path: str = "", frames: int = 0) -> str:
+    """Start lossless video recording of the emulated screen + sound (any build).
+
+    The target file is created immediately (errors such as a missing
+    directory are reported right away); the recording itself begins at the
+    end of the next emulated frame - while the emulation is paused it stays
+    ``start_pending`` until you run it (e.g. ``emu_run(frames=N)``). The
+    frame on which the start is processed is not recorded. Recording counts
+    EMULATED frames (50 per second; 60 on MZ-700 NTSC and MZ-1500 - see
+    ``fps`` in the status), so the emulation speed (MAX SPEED,
+    pauses between tool calls) does not affect the video.
+
+    Args:
+        path: Target ``.avi`` on the emulator host (absolute path
+            recommended; an existing file is overwritten). Empty = generated
+            name ``<platform>_YYYYMMDD_HHMMSS.avi`` (``mz800_...``,
+            ``mz700_...``, ``mz1500_...``) in the configured output
+            directory (never overwrites an existing recording).
+        frames: Auto-stop after this many recorded frames (0 = no limit).
+            The emulator keeps running after the auto-stop.
+
+    Returns:
+        JSON status (see ``emu_videorec_status``) plus ``start_requested``
+        and ``stop_after_frames``, or ``{"error": "..."}`` (e.g. recording
+        already running, cannot create the file).
+
+    See ``emulator://docs/videorec_workflow`` for the full workflow.
+    """
+    # bool je v Pythonu podtřída int - True by se tiše stalo frames=1.
+    if isinstance(frames, bool) or not isinstance(frames, int) or frames < 0:
+        return json.dumps({"error": "frames must be an integer >= 0"})
+    data: dict[str, Any] = {"frames": frames}
+    if isinstance(path, str) and path:
+        data["path"] = path
+    resp = await _send_request("videorec_start", data)
+    if not resp.get("success", False):
+        return json.dumps({"error": resp.get("error", "videorec_start failed")})
+    return json.dumps(_data_or_error(resp))
+
+
+@mcp.tool()
+async def emu_videorec_stop(wait: bool = True, timeout_s: float = 30.0) -> str:
+    """Stop video recording and (by default) wait until the files are complete.
+
+    The stop is executed at the end of the next emulated frame, or at once
+    while the emulation is paused. A pending (not yet started) recording is
+    cancelled and its file deleted (``start_cancelled``). Finalizing the AVI
+    index and writing the ``.cuts.json`` sidecar runs on a background writer
+    thread; with ``wait=True`` this tool polls ``videorec_status`` until the
+    ``saved`` (or ``failed``) event arrives.
+
+    Args:
+        wait: Wait for the ``saved`` / ``failed`` event (default True).
+        timeout_s: Maximum wait in seconds (default 30).
+
+    Returns:
+        JSON status plus ``stop_requested``; with ``wait`` also ``saved``
+        (bool) - ``true`` when the recording was written successfully, then
+        ``path`` / ``sidecar`` point to the finished files and
+        ``recorded_frames`` is the number of frames in the recording (the
+        status itself is already ``idle`` with ``frames`` = 0). On timeout
+        ``saved`` is ``false`` and ``warning`` explains it. ``{"error": ...}``
+        when no recording is running.
+    """
+    resp = await _send_request("videorec_stop")
+    if not resp.get("success", False):
+        return json.dumps({"error": resp.get("error", "videorec_stop failed")})
+    data = _data_or_error(resp)
+    if not wait or "error" in data or data.get("start_cancelled"):
+        return json.dumps(data)
+    seq0 = (data.get("last_event") or {}).get("seq", 0)
+    deadline = asyncio.get_running_loop().time() + max(0.0, float(timeout_s))
+    while True:
+        st_resp = await _send_request("videorec_status")
+        st = _data_or_error(st_resp)
+        if "error" in st:
+            return json.dumps(st)
+        ev = st.get("last_event") or {}
+        if (st.get("state") == "idle" and ev.get("seq", 0) > seq0
+                and ev.get("kind") in ("saved", "failed")):
+            st["stop_requested"] = True
+            st["saved"] = ev.get("kind") == "saved"
+            # Po uložení je stav IDLE (frames = 0); počet snímků nese událost.
+            st["recorded_frames"] = ev.get("frame", 0)
+            return json.dumps(st)
+        if asyncio.get_running_loop().time() >= deadline:
+            st["stop_requested"] = True
+            st["saved"] = False
+            st["warning"] = ("timed out waiting for the recording to be "
+                             "saved; poll emu_videorec_status")
+            return json.dumps(st)
+        await asyncio.sleep(_VIDEOREC_POLL_S)
+
+
+@mcp.tool()
+async def emu_videorec_pause(paused: Optional[bool] = None) -> str:
+    """Record-pause: keep emulating but stop writing frames (or resume).
+
+    Takes effect at the end of the next emulated frame. Pausing closes the
+    current segment of the recording, resuming opens a new one (the export
+    joins segments with the configured transition, e.g. a fade).
+
+    Args:
+        paused: ``true`` = pause recording, ``false`` = resume, omitted /
+            ``null`` = toggle. Explicit values are idempotent.
+
+    Returns:
+        JSON status plus ``pause_requested`` and ``paused_target``, or
+        ``{"error": ...}`` when no recording is running.
+    """
+    data: dict[str, Any] = {}
+    if paused is not None:
+        if not isinstance(paused, bool):
+            return json.dumps({"error": "paused must be a boolean or null"})
+        data["paused"] = paused
+    resp = await _send_request("videorec_pause", data)
+    if not resp.get("success", False):
+        return json.dumps({"error": resp.get("error", "videorec_pause failed")})
+    return json.dumps(_data_or_error(resp))
+
+
+@mcp.tool()
+async def emu_videorec_marker(label: str = "") -> str:
+    """Add a marker (chapter) at the current position of the recording.
+
+    The marker gets the index of the next recorded frame and is stored in
+    the ``.cuts.json`` sidecar; the export turns markers into YouTube
+    chapters. A retake (loading a snapshot taken during this recording)
+    discards markers at or after the snapshot point.
+
+    Args:
+        label: Marker text; empty = ``"Marker at frame N"``.
+
+    Returns:
+        JSON status plus ``marker_requested`` and ``label`` (the label
+        actually used), or ``{"error": ...}`` when no recording is running
+        (also right after ``emu_videorec_start`` before any frame ran).
+    """
+    data: dict[str, Any] = {}
+    if isinstance(label, str) and label:
+        data["label"] = label
+    resp = await _send_request("videorec_marker", data)
+    if not resp.get("success", False):
+        return json.dumps({"error": resp.get("error", "videorec_marker failed")})
+    return json.dumps(_data_or_error(resp))
+
+
+@mcp.tool()
+async def emu_videorec_timebase(timebase: str) -> str:
+    """Switch the recording timebase: emulated time or real time.
+
+    ``emulated`` (default): every emulated frame is one video frame (turbo
+    and pauses do not change the video). ``realtime``: 50 (60 on MZ-700
+    NTSC and MZ-1500) frames per second of wall-clock time with whatever was on the screen and the sound that
+    went to the speaker - turbo plays fast, pauses follow the INI option
+    ``realtime_pause``. Applies to the running recording (switching to real
+    time within one frame period, back to emulated time at the end of the next emulated
+    frame; each switch starts a new segment) and to the next start.
+    It changes the persistent user setting (saved to the INI on exit, the
+    same as the GUI switch) - on a shared instance switch back to
+    ``emulated`` when done.
+    Without an audio device (``--headless``, ``--mcp-pipe``) the real-time
+    sound is rendered by the same SDL path without playing it.
+
+    Args:
+        timebase: ``"emulated"`` or ``"realtime"``.
+
+    Returns:
+        JSON status (see ``emu_videorec_status``) plus
+        ``timebase_requested``, or ``{"error": ...}`` for an invalid value.
+    """
+    if timebase not in ("emulated", "realtime"):
+        return json.dumps({"error": 'timebase must be "emulated" or "realtime"'})
+    resp = await _send_request("videorec_timebase", {"timebase": timebase})
+    if not resp.get("success", False):
+        return json.dumps({"error": resp.get("error", "videorec_timebase failed")})
+    return json.dumps(_data_or_error(resp))
+
+
+@mcp.tool()
+async def emu_videorec_status() -> str:
+    """Return the video recording status.
+
+    Returns:
+        JSON ``{"supported": bool, "state": "idle"|"recording"|"paused",
+        "start_pending": bool, "frames": int, "fps": int,
+        "duration_s": float, "segment": int, "segment_open": bool,
+        "bytes": int, "parts": int,
+        "retake_mode": "off"|"discard"|"seam", "path": str|null,
+        "sidecar": str|null, "last_error": str|null,
+        "timebase": "emulated"|"realtime",
+        "timebase_effective": "emulated"|"realtime",
+        "rt_activity": "off"|"live"|"frozen"|"skipping",
+        "last_event": null | {"seq": int, "kind": "started"|"saved"|
+        "failed"|"retake"|"seam", "frame": int, "path": str|null,
+        "text": str}}``.
+
+        ``frames`` counts recorded frames (after a retake it drops back to
+        the snapshot point). ``path`` / ``bytes`` / ``parts`` describe the
+        running or the last recording; ``path`` is the first AVI part
+        (long recordings continue in ``<name>_002.avi``, ...).
+        ``retake_mode`` is the mode of the running recording (without a
+        recording: the setting the next start will use); ``discard``
+        rewinds the recording when a snapshot taken during it is loaded.
+        ``timebase`` is the requested timebase (see ``emu_videorec_timebase``),
+        ``timebase_effective`` the one in use right now (``realtime`` with
+        ``realtime_speed = emulated_when_fast`` falls back to ``emulated``
+        while the speed is not 100 %); ``rt_activity`` tells whether real-time
+        recording writes live frames, frozen frames (paused emulation) or
+        skips.
+    """
+    resp = await _send_request("videorec_status")
+    if not resp.get("success", False):
+        return json.dumps({"error": resp.get("error", "videorec_status failed")})
+    return json.dumps(_data_or_error(resp))
+
+
 # === V1.A.7 - Profiler Tools (5) =====================================
 #
 # Profiler V1 (per-function CPU profiler) je v master mz800new mergnut
@@ -3257,36 +3920,52 @@ def _parse_mzf_header(raw: bytes) -> dict:
 
 
 @mcp.tool()
-async def emu_media_run_mzf(path: str = "", bytes_b64: str = "") -> str:
+async def emu_media_run_mzf(path: str = "", bytes_b64: str = "",
+                            bootstrap: bool = True) -> str:
     """Load an MZF program AND start executing it from the MZF EXEC
-    address (autentic Sharp ROM Monitor LOAD handover).
+    address.
 
-    Composite of ``emu_media_load_mzf`` + ROM disconnect via ``emu_io_write``
-    on ports 0xE0/0xE1 + ``emu_set_register`` PC=exec_addr. The MZF
-    header is parsed client-side (Python) to obtain the EXEC address; the
-    actual body load goes through the emulator's CMT hack as in
-    ``emu_media_load_mzf``.
+    With ``bootstrap=True`` (default) the emulator is RESET and the
+    program is started exactly like the CLI option ``--run-mzf``: the
+    machine is put into the state the ROM leaves it in after loading a
+    program from tape (CPU registers incl. IM 1, DI and SP=0x10F0, 8255,
+    8253 CTC, Z80 PIO, PSG, GDG, VRAM, monitor work area in RAM, the
+    entry registers the platform ROM passes to the program), then PC =
+    exec address. The reset is the same as ``emu_reset``, so the result
+    does not depend on what ran in the emulator before. The pause state
+    is kept: if the emulation was paused, the program waits at its first
+    instruction. The file is checked before the reset - a missing,
+    unreadable or truncated file returns an error and does NOT reset the
+    machine.
 
-    WARNING: This is destructive. The CPU starts executing from the MZF
-    EXEC address with the lower ROM disconnected; whatever code was at
-    the ROM-shadowed RAM region is now visible. Save a snapshot beforehand
-    if you need to recover the previous state.
+    With ``bootstrap=False`` this is the older composite without a reset:
+    ``emu_media_load_mzf`` + ROM disconnect via ``emu_io_write`` on ports
+    0xE0/0xE1 + ``emu_set_register`` PC=exec_addr. Nothing else is
+    initialised: interrupt mode, IFF, Z80 PIO, CTC, palette and all other
+    state stay whatever the previous program left there, so a program can
+    behave differently than after a real tape load (e.g. no interrupts).
 
-    Provide exactly one of ``path`` or ``bytes_b64``. Returns a JSON
-    payload with the parsed header fields and the steps performed.
+    WARNING: Both variants are destructive. Save a snapshot beforehand if
+    you need to recover the previous state.
+
+    Provide exactly one of ``path`` or ``bytes_b64``. The MZF header is
+    parsed client-side (Python) to report the header fields.
 
     Args:
         path: Filesystem path to a .mzf file.
         bytes_b64: Inline base64-encoded MZF content.
+        bootstrap: True = reset + ``--run-mzf`` bootstrap (defined state),
+            False = load into the running machine and jump (no reset).
 
     Returns on success:
       ``{"loaded": true, "header": {file_type, filename, file_size,
-         load_addr, exec_addr}, "rom_disconnected": true,
-         "pc_set_to": int}``.
+         load_addr, exec_addr}, "bootstrap": bool, "reset": bool,
+         "pc_set_to": int}``; with ``bootstrap=False`` also
+         ``"rom_disconnected": true``.
 
     Returns on error:
-      ``{"error": "..."}`` - the partial operations performed before the
-      error are NOT rolled back.
+      ``{"error": "..."}``. With ``bootstrap=False`` the partial
+      operations performed before the error are NOT rolled back.
     """
     has_path = bool(path)
     has_b64 = bool(bytes_b64)
@@ -3309,9 +3988,25 @@ async def emu_media_run_mzf(path: str = "", bytes_b64: str = "") -> str:
     if "error" in hdr:
         return json.dumps(hdr)
     exec_addr = hdr["exec_addr"]
-
-    # 1. Load MZF body do RAM
     args = {"path": path} if has_path else {"bytes_b64": bytes_b64}
+
+    if bootstrap:
+        # Reset + bootstrap jako CLI --run-mzf, celé v emulátoru v jednom
+        # příkazu (soubor ověří emulátor před resetem).
+        resp = await _send_request("media_run_mzf", args)
+        if not resp.get("success", False):
+            return json.dumps(
+                {"error": resp.get("error", "media_run_mzf failed"),
+                 "header": hdr})
+        return json.dumps({
+            "loaded": True,
+            "header": hdr,
+            "bootstrap": True,
+            "reset": True,
+            "pc_set_to": exec_addr,
+        })
+
+    # Varianta bez resetu: 1. Load MZF body do RAM
     resp = await _send_request("media_load_mzf", args)
     if not resp.get("success", False):
         return json.dumps(
@@ -3340,6 +4035,8 @@ async def emu_media_run_mzf(path: str = "", bytes_b64: str = "") -> str:
     return json.dumps({
         "loaded": True,
         "header": hdr,
+        "bootstrap": False,
+        "reset": False,
         "rom_disconnected": True,
         "pc_set_to": exec_addr,
     })
@@ -3791,9 +4488,13 @@ async def emu_periph_detach(kind: str) -> str:
 # WARNING token v každé description je nutný (= AI klient může spustit
 # nezamýšlené BASIC příkazy nebo přepsat BASIC program přes RUN+RETURN).
 #
-# Frame timing: 50 fps (PAL MZ-800). Default frames=3 (~60 ms) odpovídá
-# realistickému keyboard press délce. Pro precision timing použij
-# emu_input_send_keys_with_delays.
+# Frame timing: frames / frame_per_key / hold_frames / gap_frames jsou
+# snímky EMULACE (50 Hz PAL), nezávisle na rychlosti emulace (normal, MAX
+# SPEED, zpomalení s CDL). Stisky a uvolnění provádí emu vlákno na
+# hranicích snímků (backend hid_script.c). Default frames=3 (60 ms emulace)
+# odpovídá realistické délce stisku. Pro precision timing použij
+# emu_input_send_keys_with_delays. Timeout requestu roste s délkou
+# sekvence (_hid_timeout_s).
 
 
 @mcp.tool()
@@ -3804,19 +4505,38 @@ async def emu_input_send_key(key: str, frames: int = 3) -> str:
     state). Use with explicit user consent.
 
     Args:
-        key: Key identifier. Supported names (case-insensitive):
-            RETURN, ENTER, SPACE, BACKSPACE, INSERT, DELETE, ESC,
-            BREAK, TAB, SHIFT, CONTROL, GRAPH, ALPHA, BLANK,
-            ARROW_UP/DOWN/LEFT/RIGHT, F1..F9.
+        key: Key identifier. ONE name table is shared by
+            emu_input_send_key, emu_input_send_keys (key_names),
+            emu_input_press_key, emu_input_release_key and
+            emu_input_send_keys_with_delays. Supported names
+            (case-insensitive): RETURN/ENTER/CR, SPACE, BACKSPACE/DELETE/DEL,
+            INSERT/INS/INST, ESC/ESCAPE/BREAK, TAB, SHIFT, CONTROL/CTRL,
+            GRAPH, ALPHA, BLANK, LIBRA, F1..F9, cursor keys
+            ARROW_UP/DOWN/LEFT/RIGHT = UP/DOWN/LEFT/RIGHT =
+            CURSOR_UP/DOWN/LEFT/RIGHT, and the arrow-glyph character keys
+            UP_ARROW / DOWN_ARROW (not cursor movement). See
+            emulator://docs/mz800_keyboard.
             ASCII fallback: single-char string ("A", "1", "?") or
-            explicit "ASCII:<char>" prefix.
-        frames: Number of frames to hold the key (default 3, ~60 ms
-            at 50 fps PAL). Maximum 600 frames (~12 sec).
+            explicit "ASCII:<char>" prefix. An unknown name returns
+            "Unknown key '<name>'. Closest valid names: ...".
+        frames: Number of EMULATED frames to hold the key (default 3 =
+            60 ms of emulated time at 50 Hz PAL). Maximum 600 frames.
+
+    Timing: ``frames`` counts emulated frames, independent of the
+    emulation speed (normal, ``emu_set_speed(mode="max")``, or slower
+    than real time e.g. with CDL). The emulator itself presses and
+    releases the key on frame boundaries. If the emulator is paused, it
+    runs exactly ``frames`` frames and pauses again; if it is running, it
+    keeps running. The call returns after the key was released.
 
     Returns:
         JSON ``{"key": str, "col": int, "bit": int, "shift": bool,
-        "frames": int, "sent": true, "landing_verified": bool}`` or
-        ``{"error": "..."}``.
+        "frames": int, "sent": true, "landing_verified": bool,
+        "emu_frames": int, "complete": bool, "interrupted": bool}`` or
+        ``{"error": "..."}``. ``emu_frames`` = emulated frames that
+        actually elapsed between press and release. ``interrupted:
+        true`` = the hold was cut short (breakpoint hit, ``emu_pause``,
+        GUI pause, reset or a stuck emulation); the key was released.
 
         NOTE: ``sent: true`` only means the host-side key injection was
         performed; it is NOT a guarantee the guest read the key.
@@ -3835,7 +4555,8 @@ async def emu_input_send_key(key: str, frames: int = 3) -> str:
     if frames < 0 or frames > 600:
         return json.dumps({"error": "frames must be 0..600"})
     resp = await _send_request(
-        "input_send_key", {"key": key, "frames": frames})
+        "input_send_key", {"key": key, "frames": frames},
+        timeout_s=_hid_timeout_s(frames))
     if not resp.get("success", False):
         return json.dumps({"error": resp.get("error", "input_send_key failed")})
     return json.dumps(_data_or_error(resp))
@@ -3853,13 +4574,28 @@ async def emu_input_send_keys(
         text: Text to type. Format depends on encoding.
         encoding: ``"ascii"`` (default, plain text e.g. ``"RUN\\r"``)
             or ``"key_names"`` (JSON array string of key names
-            e.g. ``'["RUN","RETURN"]'``).
-        frame_per_key: Frames to hold each key (default 3).
+            e.g. ``'["SHIFT","CURSOR_RIGHT","RETURN"]'``; same names
+            as emu_input_send_key / emu_input_press_key, an unknown name
+            fails the whole call before any key is sent).
+        frame_per_key: EMULATED frames to hold each key (default 3).
+            Consecutive keys are separated by 1 frame with no key
+            pressed, so that repeated keys (e.g. "LL") register as two
+            presses.
+
+    Timing: frames are emulated frames, independent of the emulation
+    speed; the emulator presses and releases the keys on frame
+    boundaries. A paused emulator runs exactly the length of the
+    sequence and pauses again; a running one keeps running.
 
     Returns:
         JSON ``{"keys_sent": int, "keys_landed": int,
         "total_frames": int, "encoding": str,
-        "landing_verified": bool}`` or ``{"error": "..."}``.
+        "landing_verified": bool, "emu_frames": int,
+        "complete": bool, "interrupted": bool}`` or
+        ``{"error": "..."}``. ``emu_frames`` = emulated frames that
+        actually elapsed; ``interrupted: true`` = the sequence was cut
+        short (breakpoint, pause, reset); ``keys_sent`` then counts only
+        the keys that were fully pressed and released.
 
         NOTE: ``keys_sent`` counts host-side key injections into the
         virtual matrix, NOT keys the guest actually read.
@@ -3879,10 +4615,14 @@ async def emu_input_send_keys(
         return json.dumps({"error": f"Invalid encoding: {encoding}"})
     if frame_per_key < 0 or frame_per_key > 600:
         return json.dumps({"error": "frame_per_key must be 0..600"})
+    # Horní odhad počtu kláves: backend bere nejvýš 256 kláves a žádná
+    # klávesa nemá méně než jeden znak textu (platí i pro key_names).
+    max_keys = min(len(text), 256)
     resp = await _send_request(
         "input_send_keys",
         {"text": text, "encoding": encoding,
-         "frame_per_key": frame_per_key})
+         "frame_per_key": frame_per_key},
+        timeout_s=_hid_timeout_s(max_keys * (frame_per_key + 1)))
     if not resp.get("success", False):
         return json.dumps(
             {"error": resp.get("error", "input_send_keys failed")})
@@ -3952,11 +4692,14 @@ async def emu_input_send_joystick(
         port: Joystick port (0 or 1).
         state: 8-bit bitmask (0 = no input, 0x01 = UP only,
             0x11 = UP + FIRE1).
-        frames: Hold duration in frames (default 3, max 600).
+        frames: Hold duration in EMULATED frames (default 3, max 600),
+            independent of the emulation speed (see emu_input_send_key).
 
     Returns:
         JSON ``{"port": int, "state": int, "frames": int,
-        "sent": true}`` or ``{"error": "..."}``.
+        "sent": true, "emu_frames": int, "complete": bool,
+        "interrupted": bool}`` or ``{"error": "..."}``. An error is
+        also returned by a platform without joystick (MZ-700).
     """
     if port not in (0, 1):
         return json.dumps({"error": "port must be 0 or 1"})
@@ -3966,7 +4709,8 @@ async def emu_input_send_joystick(
         return json.dumps({"error": "frames must be 0..600"})
     resp = await _send_request(
         "input_send_joystick",
-        {"port": port, "state": state, "frames": frames})
+        {"port": port, "state": state, "frames": frames},
+        timeout_s=_hid_timeout_s(frames))
     if not resp.get("success", False):
         return json.dumps(
             {"error": resp.get("error", "input_send_joystick failed")})
@@ -3982,24 +4726,45 @@ async def emu_input_send_keys_with_delays(events: list) -> str:
 
     Each event in the list is a dict:
     - ``key`` (str): key identifier (see emu_input_send_key)
-    - ``hold_frames`` (int): how long to hold (default 3)
+    - ``hold_frames`` (int): how long to hold (default 3, max 600)
     - ``gap_frames`` (int): frames between this release and next
-      press (default 0)
+      press (default 0, max 600); the gap after the last event is
+      waited too
+
+    Timing: all frames are EMULATED frames, exact and independent of the
+    emulation speed (normal, MAX SPEED, slowed down by CDL). The emulator
+    itself presses and releases the keys on frame boundaries. A paused
+    emulator runs exactly the length of the sequence and pauses again; a
+    running one keeps running. The call returns when the sequence ends
+    (its timeout grows with the sequence length).
 
     Args:
         events: List of event dicts (max 256 events).
 
     Returns:
-        JSON ``{"events_processed": int, "total_frames": int}``
-        or ``{"error": "..."}``.
+        JSON ``{"events_processed": int, "total_frames": int,
+        "emu_frames": int, "complete": bool, "interrupted": bool}``
+        or ``{"error": "..."}``. ``total_frames`` = sum of hold+gap of
+        the processed events, ``emu_frames`` = emulated frames that
+        actually elapsed (equal when complete). ``interrupted: true`` =
+        cut short by a breakpoint, pause or reset; the held key was
+        released and ``events_processed`` counts finished events only.
     """
     if not isinstance(events, list) or not events:
         return json.dumps(
             {"error": "events must be a non-empty list"})
     if len(events) > 256:
         return json.dumps({"error": "max 256 events per call"})
+    total = 0
+    for ev in events:
+        if isinstance(ev, dict):
+            for name, default in (("hold_frames", 3), ("gap_frames", 0)):
+                v = ev.get(name, default)
+                if isinstance(v, int):
+                    total += min(max(v, 0), 600)
     resp = await _send_request(
-        "input_send_keys_with_delays", {"events": events})
+        "input_send_keys_with_delays", {"events": events},
+        timeout_s=_hid_timeout_s(total))
     if not resp.get("success", False):
         return json.dumps(
             {"error": resp.get("error", "input_send_keys_with_delays failed")})
@@ -4047,6 +4812,9 @@ async def emu_stop() -> str:
         return json.dumps(
             {"error": "transport not connected (call any tool first "
                        "or invoke emu_start)"})
+
+    # Konec backendu vyžádal wrapper - reader ho nesmí hlásit jako pád.
+    _transport.expected_exit = True
 
     # Pošli emu_stop request. Backend response = success + trigger
     # shutdown callback. Po triggeru emu thread končí, child proces
@@ -4112,11 +4880,16 @@ async def emu_start(binary_path: str = "") -> str:
             {"error": "hot-swap requires pipe transport "
                        "(current: " + TRANSPORT_KIND + ")"})
 
-    global _transport, EMU_EXE
+    global _transport, EMU_EXE, _last_exit, _restart_notice
 
     if _transport is not None and _transport.is_alive():
         return json.dumps(
             {"error": "emulator already running (call emu_stop first)"})
+
+    # Explicitní start: případný předchozí pád se už klientovi neoznamuje
+    # (nový proces si vyžádal sám).
+    _last_exit = None
+    _restart_notice = None
 
     # Override binární cesty (= explicit argument vždy vítězí nad env).
     if binary_path:
@@ -4413,12 +5186,13 @@ async def emu_get_cpu_panel_batch(want_im2: bool = False,
 async def emu_debugger_activate() -> str:
     """Activate the internal debugger programmatically.
 
-    Equivalent to opening the debug window from the GUI: sets
-    ``g_debugger.active = 1`` in the backend. As a side effect, the
-    default WITH_WINDOW preset enables CPU instruction history
-    recording (``cpuhist``) and the memory heatmap (``mhmap``), so
-    ``emu_get_last_instr`` and ``emu_history_get`` start returning
-    real data.
+    Sets ``g_debugger.active = 1`` in the backend and recomputes the
+    CPU callbacks, as opening the debug window does (the GUI window
+    itself is not opened). CPU instruction history (``cpuhist``) and
+    the memory heatmap (``mhmap``) then record if their mode is tied
+    to the debugger window (WITH_WINDOW, or WITH_WINDOW_OR_BP for
+    ``cpuhist``), so ``emu_get_last_instr`` and ``emu_history_get``
+    start returning real data.
 
     Idempotent: calling on an already active debugger is a no-op
     beyond the response.
@@ -4435,8 +5209,11 @@ async def emu_debugger_activate() -> str:
 async def emu_debugger_deactivate() -> str:
     """Deactivate the internal debugger programmatically.
 
-    Clears ``g_debugger.active`` in the backend. CPU history and
-    memory heatmap recording stop in the WITH_WINDOW preset.
+    Clears ``g_debugger.active`` in the backend and recomputes the
+    CPU callbacks. CPU history and memory heatmap recording tied to
+    the debugger window stop (in WITH_WINDOW_OR_BP ``cpuhist`` keeps
+    recording while an enabled breakpoint exists). If the GUI debug
+    window is open, it re-activates the debugger immediately.
 
     Idempotent. Use ``emu_is_debugger_active`` if the current state
     matters before deciding to call this.
@@ -4458,8 +5235,10 @@ async def emu_is_debugger_active() -> str:
     not influence emulator state.
 
     Returns:
-        JSON ``{"active": bool}``. ``true`` indicates that history
-        and heatmap recording are running in the WITH_WINDOW preset.
+        JSON ``{"active": bool}``. ``true`` means that CPU history
+        and heatmap recording tied to the debugger window
+        (WITH_WINDOW, or the default WITH_WINDOW_OR_BP for CPU
+        history) is running.
     """
     resp = await _send_request("is_debugger_active")
     return json.dumps(_data_or_error(resp))
@@ -4552,9 +5331,16 @@ async def emu_bp_create_with_init(addr: int,
     by the ``action`` field, and ``emulator://docs/smart_vars`` for
     the ``$name`` variables written by the action.
 
+    A range breakpoint needs both ``"addr_end"`` and
+    ``"addr_match_mode"`` (value ``"RANGE"``) in ``fields``; a new
+    breakpoint starts in ``SINGLE`` mode, where ``addr_end`` is ignored.
+
     Returns:
         JSON ``{"id": int, "created": bool}``. ``id`` is the newly
-        allocated breakpoint ID or ``-1`` on failure.
+        allocated breakpoint ID or ``-1`` on failure. When ``addr_end``
+        differs from ``addr`` but the match mode stays ``SINGLE``, the
+        breakpoint is created anyway (it matches only ``addr``) and the
+        result also carries ``warning``.
     """
     if not (0 <= addr <= 0xFFFF):
         return json.dumps({"error": "addr must be in range 0..65535"})
@@ -6070,7 +6856,15 @@ async def resource_periph_cmt() -> str:
     "paused": bool, "filled": bool, "polarity_inverted": bool,
     "cmtspeed": int, "cpu_boost": bool, "mzfsize_check": bool,
     "output": int, "playsts": int, "start_time": int,
-    "paused_time": int, "image_basename": str}``.
+    "paused_time": int, "image_basename": str,
+    "default_pulses_us": [4 floats], "custom_pulses_us": [4 floats]}``.
+
+    ``cmtspeed`` is the default tape speed (en_CMTSPEED, see
+    ``emu_cmt_set_speed``; 10 = custom pulse lengths).
+    ``default_pulses_us`` are the pulse lengths of the default speed in
+    microseconds (long high, long low, short high, short low);
+    ``custom_pulses_us`` are the stored custom lengths used when
+    ``cmtspeed`` is 10.
 
     ``state`` and ``paused`` are orthogonal - PLAY + paused=true means
     the playback is suspended. ``filled`` is true when an MZF image is
@@ -6110,10 +6904,17 @@ async def resource_periph_cmt_tape() -> str:
 
     Each block: ``{"block_id": int, "name": str, "cmt_speed": int,
     "type": int, "is_current": bool, "playable": bool,
-    "recordable": bool}``. ``cmt_speed`` is the en_CMTSPEED value (1..9,
-    see ``emu_cmt_set_speed``); ``type`` is the block type (0=WAV,
-    1=MZF, 2=TAPHEADER, 3=TAPDATA). ``playable`` / ``recordable`` are
-    per-tape flags repeated on each block for convenience.
+    "recordable": bool, "block_speed": "none"|"default"|"set",
+    "pulses_us": [4 floats]}``. ``block_speed`` "default" follows the
+    default tape speed, "set" has its own ``cmt_speed`` (the en_CMTSPEED
+    value 1..9, or 10 = custom pulse lengths, see ``emu_cmt_set_speed``).
+    ``pulses_us`` (MZ blocks only) are the effective pulse lengths in
+    microseconds the block plays with (long high, long low, short high,
+    short low). Blocks that follow a UniCMT CMTSPEED header in an .mzt
+    have "set" speed with the header's pulse lengths; the header itself
+    is not listed. ``type`` is the block type (0=WAV, 1=MZF,
+    2=TAPHEADER, 3=TAPDATA). ``playable`` / ``recordable`` are per-tape
+    flags repeated on each block for convenience.
 
     When no tape is loaded (or the container is missing) the payload is
     ``{"available": false, "blocks": []}``. Seek with

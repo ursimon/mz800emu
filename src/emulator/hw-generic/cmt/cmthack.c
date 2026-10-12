@@ -81,6 +81,24 @@ void cmthack_load_rom_patch(unsigned enabled)
     cmthack_mzarch_load_rom_patch(enabled);
 }
 
+/** INI element `[CMTHACK] enable` (nastaví cmthack_init), pro připnutí INI hodnoty. */
+static CFGELM *s_cmthack_enable_elm = NULL;
+
+void cmthack_disable_for_session(void)
+{
+    if (!CMTHACK_TEST_IS_INSTALLED)
+    {
+        return;
+    };
+    cmthack_load_rom_patch(0);
+    if (s_cmthack_enable_elm)
+    {
+        /* Do INI se při ukončení zapíše 1 (stav před vypnutím), dokud
+         * uživatel hack sám nepřepne. */
+        cfgelement_pin_save_value(s_cmthack_enable_elm, 1);
+    };
+}
+
 void cmthack_reset(void)
 {
     /* pokud jsme rozecteny MZF soubor, tak ho zavrem */
@@ -120,6 +138,7 @@ void cmthack_init(void)
     elm = cfgmodule_register_new_element(cmod, "enable", CFGENTYPE_BOOL, DEFAULT_CMT_HACK_ENABLE);
     cfgelement_set_propagate_cb(elm, cmthack_propagatecfg_load_rom_patch, NULL);
     cfgelement_set_handlers(elm, NULL, (void *)&g_cmthack.load_patch_installed);
+    s_cmthack_enable_elm = elm;
 
     elm = cfgmodule_register_new_element(cmod, "fix_fname_terminator", CFGENTYPE_BOOL, DEFAULT_CMT_HACK_FIX_TERMINATOR);
     cfgelement_set_handlers(elm, (void *)&g_cmthack.fix_fname_terminator, (void *)&g_cmthack.fix_fname_terminator);
@@ -146,19 +165,45 @@ void cmthack_result(en_LOADRET result)
     z80_set_reg(g_mzarch_main.cpu, Z80_REG_AF, reg_af);
 }
 
-/*
+/**
+ * @brief Obslouží požadavek ROM na načtení hlavičky z kazety (port 01h).
  *
- * Pozadavek na precteni headeru z CMT
+ * Volá se z port_write_cb() uvnitř instrukce OUT (EMU vlákno), kterou do ROM
+ * vložil CMT hack patch. S GUI otevře blokující dialog pro výběr MZF a čeká,
+ * dokud ho uživatel nezavře; emulace po tu dobu stojí. Výsledek předá ROM
+ * přes registry (cmthack_result()): zrušení = Break.
  *
+ * Bez interaktivního GUI (--headless, --mcp-pipe) dialog nikdo nezavře.
+ * Dřív EMU vlákno čekalo navždy: emulace stála, fronta dbgapi se už
+ * nevybrala a každý příkaz MCP vracel "Emulator busy". Nyní se požadavek
+ * okamžitě vyřídí jako zrušený (ROM dostane Break), na stderr se vypíše
+ * varování a emulace běží dál. Načíst pásku v takovém režimu lze reálnou
+ * páskou (CMT hack vypnout, [CMTHACK] enable = 0 nebo MCP cmt_hack_set).
+ *
+ * @pre EMU vlákno, uvnitř instrukce OUT (01h) se zapnutým CMT hack patchem.
+ * @post Hlavička je v RAM na adrese z HL a ROM dostala výsledek OK, nebo ROM
+ *       dostala Break či chybu. Zvuk a měření MAX SPEED jsou obnovené.
+ * @par Side effects Pozastaví zvuk a měření po dobu dialogu, zapisuje do RAM
+ *      a registrů CPU, při headless výpis na stderr.
  */
 void cmthack_load_file(void)
 {
+    if (!baseui_filechooser_can_wait())
+    {
+        /* Headless: dialog by nikdo nezavřel a EMU vlákno by stálo navždy. */
+        fprintf(stderr, "WARNING: CMT hack needs the GUI file dialog to load a tape file; "
+                        "no GUI in headless mode, load cancelled (Break). "
+                        "Disable the CMT hack to load from the virtual tape.\n");
+        cmthack_result(LOADRET_BREAK);
+        return;
+    };
+
     iface_audio_pause_emulation(1);
     /* CMT-hack stall: file chooser dialog + IO stojí emulaci - vyloučit z benchmarku */
     emulator_measuring_maxspeed_stall_begin();
     framebuffer_flush_full_screen();
 
-    char *filename = baseui_filechooser_open_file_wait(_("Select a MZF File"), ".mzf, .m12, .*", NULL, NULL, g_cmthack.last_filename, NULL);
+    char *filename = baseui_filechooser_open_file_wait(BASEUI_FCHOOSER_CAT_MZF, _("Select a MZF File"), ".mzf, .m12, .*", NULL, NULL, g_cmthack.last_filename, NULL);
 
     if (filename == NULL)
     {

@@ -14,21 +14,31 @@ All banking is performed via Z80 I/O ports `0xE0..0xE6`. **The value
 written/read is irrelevant** - the port number alone selects the
 mapping.
 
-| Port | OUT effect (MZ-700 mode) | OUT effect (MZ-800 native) | IN effect (MZ-800 native) |
+| Port | OUT effect (MZ-700 mode) | OUT effect (MZ-800 native) | IN effect (MZ-800, both modes) |
 |------|---------------------------|-----------------------------|----------------------------|
-| `0xE0` | low ROM off (= RAM at `0000..0FFF`) | low ROM off | CG-ROM + VRAM mapped (`1000..1FFF` + `8000..BFFF`) |
-| `0xE1` | upper region RAM (= VRAM/ROM off at `D000..FFFF`) | upper ROM off (= RAM at `E000..FFFF`) | CG-ROM + VRAM **unmapped** |
-| `0xE2` | low ROM on | low ROM on | - |
+| `0xE0` | low ROM off (= RAM at `0000..0FFF`); MZ-800 in MZ-700 mode: CG-ROM off too | low ROM off + CG-ROM off (`0000..1FFF` = RAM); VRAM stays | CG-ROM mapped (`1000..1FFF`) together with VRAM (`8000..BFFF`, MZ-800 native) or CG-RAM (`C000..CFFF`, MZ-700 mode) |
+| `0xE1` | upper region RAM (= VRAM/ROM off at `D000..FFFF`) | upper ROM off (= RAM at `E000..FFFF`) | CG-ROM + VRAM / CG-RAM **unmapped** |
+| `0xE2` | low ROM on | low ROM on (CG-ROM stays as it is) | - |
 | `0xE3` | VRAM + upper ROM at `D000..FFFF` | upper ROM on | - |
-| `0xE4` | low ROM on + VRAM + upper ROM | low ROM + upper ROM | - |
+| `0xE4` | low ROM on + VRAM + upper ROM; MZ-800 in MZ-700 mode: CG-ROM + CG-RAM off | low ROM + CG-ROM + VRAM + upper ROM | - |
 | `0xE5` | enter **Prohibited** state (see below) | (= same) | - |
 | `0xE6` | leave Prohibited state | (= same) | - |
 
+The emulated MZ-700 has no IN banking: `IN` on `0xE0` / `0xE1` does
+not change the mapping and the CG-ROM / CG-RAM are never mapped into
+the CPU address space. The CG-ROM / CG-RAM entries above and in the
+MZ-700 layout below apply to the MZ-800 in MZ-700 mode.
+
 Key MZ-800 specific rules:
-- **IORQ OUT does not touch VRAM / CG-ROM mapping** in MZ-800 native
-  mode. VRAM at `0x8000..0xBFFF` and CG-ROM at `0x1000..0x1FFF` are
-  controlled exclusively via **IORQ IN** on `0xE0` / `0xE1` (they are
-  mapped together).
+- **IN and OUT both change the CG-ROM mapping; the last operation
+  wins.** `IN` on `0xE0` / `0xE1` maps / unmaps the CG-ROM together with
+  the VRAM (MZ-800 native) or the CG-RAM (MZ-700 mode). `OUT (0xE0)`
+  unmaps the low ROM **and** the CG-ROM but leaves the VRAM / CG-RAM
+  mapped; `OUT (0xE4)` maps the CG-ROM again (MZ-800 native, together
+  with the VRAM) or unmaps it with the CG-RAM (MZ-700 mode).
+- Consequence: `IN A, (0xE0)` followed by `OUT (0xE0), A` gives RAM at
+  `0000..1FFF` **and** the VRAM at `8000..BFFF` at the same time (run the
+  pair from outside `1000..1FFF` with interrupts disabled).
 - After ROM monitor exit on MZ-800, VRAM may be unmapped - a program
   that writes to VRAM must call `IN A, (0xE0)` first.
 - `0xE5` / `0xE6` are leftovers from the predecessor HW. `OUT (0xE5)`
@@ -88,6 +98,47 @@ text VRAM at `0xD000..0xD7FF` and attribute VRAM at `0xD800..0xDFFF`
 are accessible and `emulator://video/text_dump` returns data. The
 mode flip is detectable via `emulator://platform/info` (`mode` field
 = `native` / `compat700`).
+
+## Memory expansion (Memext) replaces the RAM
+
+When a memory expansion is connected (INI `[MEMEXT] connected = 1`,
+`type` = PEHU or LUFTNER), the Z80 sees the expansion RAM instead of the
+built-in DRAM: each 4 KB slot of the address space that is mapped to RAM
+points into a 4 KB bank of the expansion. ROM, VRAM and I/O mapping are
+unchanged. The built-in DRAM stays in the emulator but the CPU does not
+see it.
+
+Where to read the memory the program actually uses:
+
+| Source | With Memext connected |
+|--------|-----------------------|
+| `emulator://memory/...`, `emu_mem_read` | CPU view (current banking) - the expansion RAM where RAM is mapped |
+| `emu_region_read` region `ram` ("User RAM (64 KB)") | The 64 KB the CPU would see if RAM were mapped everywhere - i.e. the expansion banks currently mapped, not the built-in DRAM. With a LUFTNER FLASH bank mapped, that slot shows the write-only scratch, not FLASH. |
+| `emu_region_read` regions `memext_ram` (`sub_id` = bank) | One 4 KB bank of the expansion RAM |
+| Snapshot `.mzs`: `memory/ram.bin` | The built-in DRAM (64 KB), bypassed by Memext - for example still the power-on fill pattern |
+| Snapshot `.mzs`: `memory/memext_ram.bin` | The whole expansion RAM (512 KB) - see below |
+
+Snapshot (`.mzs` is a ZIP archive) memory files:
+
+| File | Content |
+|------|---------|
+| `memory/ram.bin` | Built-in DRAM, 64 KB, linear 0x0000..0xFFFF. Not the CPU view when Memext is connected. |
+| `memory/vram.bin` | VRAM (MZ-800 planes I+II / MZ-700 and MZ-1500 text and attribute VRAM) |
+| `memory/exvram.bin` | MZ-800 only: extended VRAM (planes III+IV) |
+| `memory/pcg.bin` | MZ-1500 only: PCG banks |
+| `memory/memory_state.xml` | Banking state (`map`) |
+| `memory/memext_ram.bin` | Expansion RAM, 512 KB, as 4 KB banks: bank `n` at offset `n * 0x1000` |
+| `memory/memext_flash.bin` | LUFTNER FLASH, 512 KB |
+| `devices/memext.xml` | Connection, type and the 16-entry `map`: `entry_i` = bank seen in the 4 KB slot `i` (slot 0 = 0x0000..0x0FFF); bit 7 set = FLASH bank `entry_i & 0x7F` |
+
+`memext_ram.bin` and `memext_flash.bin` are only written when Memext is
+connected and INI `[SNAPSHOT] include_memext = 1` (default). To get the
+CPU's RAM byte at address `A` from a snapshot with Memext: read
+`entry_(A >> 12)` from `devices/memext.xml`, then the byte at offset
+`entry * 0x1000 + (A & 0x0FFF)` of `memext_ram.bin` (or of
+`memext_flash.bin` with `entry & 0x7F` when bit 7 is set). With the
+identity map (`entry_i = i`) the first 64 KB of `memext_ram.bin` are the
+CPU's 64 KB in order.
 
 ## MZ-1500 layout
 

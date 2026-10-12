@@ -37,7 +37,19 @@ typedef enum en_EMU_PAUSE_REASON
 typedef struct st_EMULATOR
 {
     bool max_speed;          /**< Maximální rychlost (warp) - bez čekání na frame. */
-    bool paused;             /**< Emulace pozastavena (= CPU smyčka stojí). */
+
+    /**
+     * @brief Aktuální MAX SPEED zapnula automatika (CMT cpu_boost), ne uživatel.
+     *
+     * Nastavuje se jen v emulator_max_speed_boost(true), a to pouze když
+     * MAX SPEED předtím vypnutá byla. Každé uživatelské nastavení rychlosti
+     * (emulator_max_speed() - menu, klávesová zkratka, CLI --speed, MCP
+     * set_speed) příznak shodí; automatika pak MAX SPEED nevypne.
+     * Invariant: @c max_speed_boost == true implikuje @c max_speed == true.
+     */
+    bool max_speed_boost;
+
+    bool paused;            /**< Emulace pozastavena (= CPU smyčka stojí). */
 
     bool development_mode;   /**< Vývojářský režim (extra UI a diagnostika). */
 
@@ -96,7 +108,51 @@ extern "C"
     void emulator_quit(int exit_value);
     gpointer emulator_thread(gpointer ptr);
 
+    /**
+     * @brief Uživatelské zapnutí/vypnutí MAX SPEED.
+     *
+     * Volají ho menu, klávesové zkratky, CLI --speed a MCP set_speed.
+     * Shodí příznak g_emulator.max_speed_boost - o rychlosti od této chvíle
+     * rozhodl uživatel, automatika (emulator_max_speed_boost) ji nevypne.
+     *
+     * @param value true = MAX SPEED, false = normální/vlastní rychlost.
+     * @post g_emulator.max_speed == value, g_emulator.max_speed_boost == false.
+     */
     void emulator_max_speed(bool value);
+
+    /**
+     * @brief Automatické zapnutí/vypnutí MAX SPEED (CMT cpu_boost).
+     *
+     * - value == true: pokud MAX SPEED neběží, zapne ji a označí jako
+     *   automatickou (max_speed_boost = true). Běží-li už (uživatelská nebo
+     *   dříve automatická), nic nemění.
+     * - value == false: vypne MAX SPEED jen tehdy, když ji zapnula
+     *   automatika (max_speed_boost == true). Uživatelem zvolenou MAX SPEED
+     *   nechá beze změny.
+     *
+     * @param value true = automatika chce MAX SPEED, false = už ji nepotřebuje.
+     * @post Platí invariant max_speed_boost => max_speed.
+     */
+    void emulator_max_speed_boost(bool value);
+
+    /**
+     * @brief Pozastaví nebo rozběhne emulaci.
+     *
+     * Při shodě s aktuálním stavem nic nedělá. Jinak nastaví
+     * g_emulator.paused a provede vedlejší efekty:
+     * - pauza: reset měření časování snímků, událost
+     *   MZEVENT_BREAK_EMULATION_PAUSED, zrušení dočasného breakpointu
+     *   (bptmap_reset_temporary_event - Run to cursor, Step over, MCP
+     *   run_until_addr / step_out platí jen do příští pauzy, nezávisle na
+     *   otevřeném okně debuggeru);
+     * - rozběh: zruší g_debugger.run_to_temporary_breakpoint a s otevřeným
+     *   debuggerem přepne fokus na hlavní okno;
+     * - oba směry: segment MAX SPEED benchmarku a pauza/obnovení zvuku.
+     *
+     * Důvod pauzy (g_emulator.pause_reason) nenastavuje - to dělá volající.
+     *
+     * @param value true = pauza, false = běh
+     */
     void emulator_pause(bool value);
     void emulator_switch_to_normal_speed(void);
     void emulator_switch_to_custom_speed(void);

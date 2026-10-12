@@ -210,8 +210,12 @@ cursor movement).
 
 ## 6. Key names for MCP key injection
 
-The agent sends keys via the MCP tools `emu_input_send_key` / `emu_input_press_key`.
-Supported symbolic names (case-insensitive):
+The agent sends keys via the MCP tools `emu_input_send_key`, `emu_input_send_keys`
+(`encoding=key_names`), `emu_input_press_key`, `emu_input_release_key` and
+`emu_input_send_keys_with_delays`. **All of them use ONE shared key-name table**
+(one resolver in the emulator), so a name valid in one tool is valid in all of
+them. Names are case-insensitive; an unknown name is rejected with
+`Unknown key '<name>'. Closest valid names: ...`. Supported symbolic names:
 
 | Name(s) | Key |
 |---------|-----|
@@ -224,16 +228,46 @@ Supported symbolic names (case-insensitive):
 | `SPACE` | space |
 | `INSERT`, `INS` | INST |
 | `DELETE`, `DEL`, `BACKSPACE` | DEL |
-| `ARROW_UP`/`UP`, `ARROW_DOWN`/`DOWN`, `ARROW_LEFT`/`LEFT`, `ARROW_RIGHT`/`RIGHT` | cursor keys |
+| `ARROW_UP`/`UP`/`CURSOR_UP`, `ARROW_DOWN`/`DOWN`/`CURSOR_DOWN`, `ARROW_LEFT`/`LEFT`/`CURSOR_LEFT`, `ARROW_RIGHT`/`RIGHT`/`CURSOR_RIGHT` | CURSOR_UP/DOWN/LEFT/RIGHT (cursor movement keys, col 7) |
+| `INST` (alias of `INSERT`, `INS`) | INST |
+| `UP_ARROW`, `DOWN_ARROW` | the arrow-glyph character keys (col 6 bit 6, col 0 bit 5) - NOT cursor movement, so `UP_ARROW` is not `ARROW_UP`; `DOWN_ARROW` shares its position with `F9` |
 | `ESC`, `ESCAPE`, `BREAK`, `END` | ESC / BREAK |
 | `CTRL`, `CONTROL` | CTRL |
 | `SHIFT` | SHIFT |
 | `F1`-`F5` | function keys |
+| `F6`-`F9` | aliases of other keys: `F6` = `@`, `F7` = `\`, `F8` = `?`, `F9` = LIBRA position without SHIFT |
 
 Single ASCII characters can also be sent (`{"key":"A"}` or `{"key":"ASCII:@"}`);
 they are translated to the (column, bit, shift) matrix position automatically.
 
-Multi-key typing uses `emu_input_send_keys` (`encoding` = `ascii` or `key_names`).
+Multi-key typing uses `emu_input_send_keys` (`encoding` = `ascii` or `key_names`;
+with `key_names` the text is a JSON array of the names above, and an unknown
+name fails the whole call before any key is sent).
+
+**Timing.** `frames` (`emu_input_send_key`, `emu_input_send_joystick`),
+`frame_per_key` (`emu_input_send_keys`) and `hold_frames` / `gap_frames`
+(`emu_input_send_keys_with_delays`) count **emulated frames** (50 Hz PAL), not
+real time. They are exact at any emulation speed: normal, MAX SPEED
+(`emu_set_speed(mode="max")`) or slower than real time (e.g. with CDL). The
+emulator itself presses and releases the keys on frame boundaries.
+`emu_input_send_keys` leaves 1 frame with no key pressed between consecutive
+keys, so that a repeated key (e.g. `LL`) registers as two presses.
+
+- Paused emulator: the tool runs exactly the length of the sequence and pauses
+  again (like `emu_run(frames=N)`).
+- Running emulator: it keeps running; the call returns when the sequence ends.
+- The reply carries `emu_frames` (emulated frames that actually elapsed),
+  `complete` and `interrupted`. `interrupted: true` means the sequence was cut
+  short by a breakpoint, a pause (`emu_pause`, GUI) or a reset; the held key was
+  released.
+- At normal speed a long sequence takes real time (50 frames = 1 s); use
+  `emu_set_speed(mode="max")` to get through it faster without changing the
+  timing the guest sees.
+
+The primary names of the section 2 table (`CURSOR_*`, `INST`, `DEL`, `CR`, `ESC`,
+`TAB`, `SPACE`, `F1`-`F5`, `SHIFT`, `CTRL`, `GRAPH`, `ALPHA`, `BLANK`,
+`UP_ARROW`, `DOWN_ARROW`) are all accepted as written. Older names (`UP`,
+`ARROW_RIGHT`, `RETURN`, `INSERT`, ...) keep working as aliases.
 
 **Landing readback.** A successful response means the host-side
 press/hold/release injection into the virtual keyboard matrix happened. Whether

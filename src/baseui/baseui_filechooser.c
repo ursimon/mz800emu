@@ -10,6 +10,7 @@
 #include "baseui_filechooser.h"
 #include "ui-imgui/filechooser/imgui_filechooser.h"
 #include "libs/sdlapp/sdlapp.h"
+#include "libs/sdlapp/sdlapp_options.h"
 
 /**
  * @brief Destrukce struktury filechooseru. Vse co není NULL je uvolněno.
@@ -64,7 +65,24 @@ void baseui_filechooser_destroy(baseui_fchooser_t *fch)
     free(fch);
 }
 
-static baseui_fchooser_t *baseui_filechooser_create_new(const char *title, const char *filter, const char *path, const char *fileName, const char *filePathName, BaseuiFchooserCb cb, gpointer user_data, baseui_fchooser_type_t type)
+/**
+ * @brief Alokuje a naplní strukturu filechooseru (dialog ještě neotevře).
+ *
+ * Řetězce si kopíruje (g_strdup). Výchozí umístění dialogu se zde neurčuje,
+ * to dělá až imgui_filechooser_new() podle kategorie a paměti adresářů.
+ *
+ * @param category Kategorie souboru pro paměť posledního adresáře
+ * @param title Titulek dialogu; NULL = výchozí podle typu
+ * @param filter Filtr souborů, nebo NULL
+ * @param path Výchozí adresář, nebo NULL (uloží se ".")
+ * @param fileName Výchozí název souboru, nebo NULL
+ * @param filePathName Plná cesta k souboru, nebo NULL (pak se použije path + fileName)
+ * @param cb Callback po zavření dialogu, nebo NULL
+ * @param user_data Data pro callback
+ * @param type Typ dialogu
+ * @return Nová struktura (uvolnit baseui_filechooser_destroy()), nebo NULL při chybě alokace
+ */
+static baseui_fchooser_t *baseui_filechooser_create_new(baseui_fchooser_category_t category,const char *title, const char *filter, const char *path, const char *fileName, const char *filePathName, BaseuiFchooserCb cb, gpointer user_data, baseui_fchooser_type_t type)
 {
     baseui_fchooser_t *fch = g_new0(baseui_fchooser_t, 1);
     if (fch == NULL)
@@ -111,6 +129,7 @@ static baseui_fchooser_t *baseui_filechooser_create_new(const char *title, const
     fch->cb = cb;
     fch->user_data = user_data;
     fch->type = type;
+    fch->category = category;
     g_mutex_init(&fch->mutex);
     g_cond_init(&fch->cond);
     return fch;
@@ -118,18 +137,19 @@ static baseui_fchooser_t *baseui_filechooser_create_new(const char *title, const
 
 /**
  * @brief Otevře dialog pro výběr souboru pro čtení.
+ * @param category Kategorie souboru pro paměť posledního adresáře (baseui_fchooser_lastdir.h)
  * @param title Titulek dialogu
  * @param filter Filtr souborů
- * @param path Výchozí cesta
+ * @param path Výchozí adresář; NULL nebo "." = zapamatovaný adresář kategorie (viz baseui_fchooser_lastdir_resolve())
  * @param fileName Výchozí název souboru
- * @param filePathName Plná cesta a název souboru k otevření
+ * @param filePathName Plná cesta a název souboru k otevření; má přednost před path, pokud jeho adresář existuje
  * @param cb Callback funkce
  * @param user_data Data pro callback funkci
  * @return Ukazatel na strukturu filechooseru
  */
-baseui_fchooser_t *baseui_filechooser_open_file(const char *title, const char *filter, const char *path, const char *fileName, const char *filePathName, BaseuiFchooserCb cb, gpointer user_data)
+baseui_fchooser_t *baseui_filechooser_open_file(baseui_fchooser_category_t category, const char *title, const char *filter, const char *path, const char *fileName, const char *filePathName, BaseuiFchooserCb cb, gpointer user_data)
 {
-    baseui_fchooser_t *fch = baseui_filechooser_create_new(title, filter, path, fileName, filePathName, cb, user_data, BASEUI_FCHOOSER_TYPE_OPEN_FILE);
+    baseui_fchooser_t *fch = baseui_filechooser_create_new(category, title, filter, path, fileName, filePathName, cb, user_data, BASEUI_FCHOOSER_TYPE_OPEN_FILE);
     if (fch == NULL)
     {
         return NULL;
@@ -140,17 +160,18 @@ baseui_fchooser_t *baseui_filechooser_open_file(const char *title, const char *f
 
 /**
  * @brief Otevře dialog pro výběr adresáře.
+ * @param category Kategorie souboru pro paměť posledního adresáře (baseui_fchooser_lastdir.h)
  * @param title Titulek dialogu
- * @param path Výchozí cesta
+ * @param path Výchozí adresář; NULL nebo "." = zapamatovaný adresář kategorie (viz baseui_fchooser_lastdir_resolve())
  * @param fileName Výchozí název souboru
- * @param filePathName Plná cesta a název souboru k otevření
+ * @param filePathName Plná cesta a název souboru k otevření; má přednost před path, pokud jeho adresář existuje
  * @param cb Callback funkce
  * @param user_data Data pro callback funkci
  * @return Ukazatel na strukturu filechooseru
  */
-baseui_fchooser_t *baseui_filechooser_open_dir(const char *title, const char *path, const char *fileName, const char *filePathName, BaseuiFchooserCb cb, gpointer user_data)
+baseui_fchooser_t *baseui_filechooser_open_dir(baseui_fchooser_category_t category, const char *title, const char *path, const char *fileName, const char *filePathName, BaseuiFchooserCb cb, gpointer user_data)
 {
-    baseui_fchooser_t *fch = baseui_filechooser_create_new(title, NULL, path, fileName, filePathName, cb, user_data, BASEUI_FCHOOSER_TYPE_OPEN_DIR);
+    baseui_fchooser_t *fch = baseui_filechooser_create_new(category, title, NULL, path, fileName, filePathName, cb, user_data, BASEUI_FCHOOSER_TYPE_OPEN_DIR);
     if (fch == NULL)
     {
         return NULL;
@@ -161,18 +182,19 @@ baseui_fchooser_t *baseui_filechooser_open_dir(const char *title, const char *pa
 
 /**
  * @brief Otevře dialog pro výběr souboru pro čtení a zápis, nebo vytvoření nového souboru. Pokud soubor existuje, nezeptá se na přepsání.
+ * @param category Kategorie souboru pro paměť posledního adresáře (baseui_fchooser_lastdir.h)
  * @param title Titulek dialogu
  * @param filter Filtr souborů
- * @param path Výchozí cesta
+ * @param path Výchozí adresář; NULL nebo "." = zapamatovaný adresář kategorie (viz baseui_fchooser_lastdir_resolve())
  * @param fileName Výchozí název souboru
- * @param filePathName Plná cesta a název souboru k otevření
+ * @param filePathName Plná cesta a název souboru k otevření; má přednost před path, pokud jeho adresář existuje
  * @param cb Callback funkce
  * @param user_data Data pro callback funkci
  * @return Ukazatel na strukturu filechooseru
  */
-baseui_fchooser_t *baseui_filechooser_open_rw_file(const char *title, const char *filter, const char *path, const char *fileName, const char *filePathName, BaseuiFchooserCb cb, gpointer user_data)
+baseui_fchooser_t *baseui_filechooser_open_rw_file(baseui_fchooser_category_t category, const char *title, const char *filter, const char *path, const char *fileName, const char *filePathName, BaseuiFchooserCb cb, gpointer user_data)
 {
-    baseui_fchooser_t *fch = baseui_filechooser_create_new(title, filter, path, fileName, filePathName, cb, user_data, BASEUI_FCHOOSER_TYPE_RW_FILE);
+    baseui_fchooser_t *fch = baseui_filechooser_create_new(category, title, filter, path, fileName, filePathName, cb, user_data, BASEUI_FCHOOSER_TYPE_RW_FILE);
     if (fch == NULL)
     {
         return NULL;
@@ -183,24 +205,43 @@ baseui_fchooser_t *baseui_filechooser_open_rw_file(const char *title, const char
 
 /**
  * @brief Otevře dialog pro výběr souboru pro zápis (vytvoření). Pokud soubor existuje, zeptá se na přepsání.
+ * @param category Kategorie souboru pro paměť posledního adresáře (baseui_fchooser_lastdir.h)
  * @param title Titulek dialogu
  * @param filter Filtr souborů
- * @param path Výchozí cesta
+ * @param path Výchozí adresář; NULL nebo "." = zapamatovaný adresář kategorie (viz baseui_fchooser_lastdir_resolve())
  * @param fileName Výchozí název souboru
- * @param filePathName Plná cesta a název souboru k otevření
+ * @param filePathName Plná cesta a název souboru k otevření; má přednost před path, pokud jeho adresář existuje
  * @param cb Callback funkce
  * @param user_data Data pro callback funkci
  * @return Ukazatel na strukturu filechooseru
  */
-baseui_fchooser_t *baseui_filechooser_save_file(const char *title, const char *filter, const char *path, const char *fileName, const char *filePathName, BaseuiFchooserCb cb, gpointer user_data)
+baseui_fchooser_t *baseui_filechooser_save_file(baseui_fchooser_category_t category, const char *title, const char *filter, const char *path, const char *fileName, const char *filePathName, BaseuiFchooserCb cb, gpointer user_data)
 {
-    baseui_fchooser_t *fch = baseui_filechooser_create_new(title, filter, path, fileName, filePathName, cb, user_data, BASEUI_FCHOOSER_TYPE_SAVE_FILE);
+    baseui_fchooser_t *fch = baseui_filechooser_create_new(category, title, filter, path, fileName, filePathName, cb, user_data, BASEUI_FCHOOSER_TYPE_SAVE_FILE);
     if (fch == NULL)
     {
         return NULL;
     };
     imgui_filechooser_new(fch);
     return fch;
+}
+
+/**
+ * @brief Zjistí, zda může blokující dialog vůbec někdo zavřít.
+ *
+ * V režimu --headless (včetně --mcp-pipe, které --headless vkládá do argv)
+ * neběží okno ani uživatel, který by dialog potvrdil nebo zrušil. Blokující
+ * varianta (*_wait) by pak čekala, dokud běží sdlapp, tedy navždy. Když ji
+ * volá EMU vlákno (CMT hack z instrukce OUT), zastaví se emulace i vyřizování
+ * příkazů dbgapi a MCP odpovídá jen "Emulator busy".
+ *
+ * @return true, pokud je k dispozici interaktivní GUI; false v --headless.
+ *
+ * @note Hledá v argv (O(n)), volat jen mimo hot path.
+ */
+bool baseui_filechooser_can_wait(void)
+{
+    return !sdlapp_option_present("--headless");
 }
 
 /**
@@ -264,17 +305,31 @@ static char *baseui_filechooser_wait(baseui_fchooser_t *fch, char **selected_pat
 
 /**
  * @brief Otevře dialog pro výběr souboru pro čtení a vrátí vybraný soubor. Čeká na dokončení dialogu.
+ * @param category Kategorie souboru pro paměť posledního adresáře (baseui_fchooser_lastdir.h)
  * @param title Titulek dialogu
  * @param filter Filtr souborů
- * @param path Výchozí cesta
+ * @param path Výchozí adresář; NULL nebo "." = zapamatovaný adresář kategorie (viz baseui_fchooser_lastdir_resolve())
  * @param fileName Výchozí název souboru
- * @param filePathName Plná cesta a název souboru k otevření
+ * @param filePathName Plná cesta a název souboru k otevření; má přednost před path, pokud jeho adresář existuje
  * @param selected_path Ukazatel na proměnnou, kam se uloží vybraný adresář (pouze pokud neni NULL)
- * @return Vybraný soubor, nebo NULL
+ * @return Vybraný soubor (vlastní ho volající, uvolnit g_free()), nebo NULL
+ *         při zrušení dialogu, ukončení aplikace nebo bez GUI.
+ *
+ * @note Bez interaktivního GUI (--headless, --mcp-pipe) dialog vůbec
+ *       neotevře a hned vrátí NULL (viz baseui_filechooser_can_wait()),
+ *       jinak by volající vlákno čekalo navždy.
+ * @pre Nevolat z UI vlákna (blokuje do zavření dialogu).
  */
-char *baseui_filechooser_open_file_wait(const char *title, const char *filter, const char *path, const char *fileName, const char *filePathName, char **selected_path)
+char *baseui_filechooser_open_file_wait(baseui_fchooser_category_t category, const char *title, const char *filter, const char *path, const char *fileName, const char *filePathName, char **selected_path)
 {
-    baseui_fchooser_t *fch = baseui_filechooser_open_file(title, filter, path, fileName, filePathName, NULL, NULL);
+    /* Bez GUI by dialog nikdo nezavřel - vrátit "zrušeno" hned. */
+    if (!baseui_filechooser_can_wait())
+    {
+        if (selected_path != NULL)
+            *selected_path = NULL;
+        return NULL;
+    };
+    baseui_fchooser_t *fch = baseui_filechooser_open_file(category, title, filter, path, fileName, filePathName, NULL, NULL);
     if (fch == NULL)
     {
         if (selected_path != NULL)
@@ -286,15 +341,27 @@ char *baseui_filechooser_open_file_wait(const char *title, const char *filter, c
 
 /**
  * @brief Otevře dialog pro výběr adresáře a vrátí vybraný adresář. Čeká na dokončení dialogu.
+ * @param category Kategorie souboru pro paměť posledního adresáře (baseui_fchooser_lastdir.h)
  * @param title Titulek dialogu
- * @param path Výchozí cesta
+ * @param path Výchozí adresář; NULL nebo "." = zapamatovaný adresář kategorie (viz baseui_fchooser_lastdir_resolve())
  * @param fileName Výchozí název souboru
- * @param filePathName Plná cesta a název souboru k otevření
- * @return Vybraný adresář, nebo NULL
+ * @param filePathName Plná cesta a název souboru k otevření; má přednost před path, pokud jeho adresář existuje
+ * @return Vybraný adresář (vlastní ho volající, uvolnit g_free()), nebo NULL
+ *         při zrušení dialogu, ukončení aplikace nebo bez GUI.
+ *
+ * @note Bez interaktivního GUI (--headless, --mcp-pipe) dialog vůbec
+ *       neotevře a hned vrátí NULL (viz baseui_filechooser_can_wait()),
+ *       jinak by volající vlákno čekalo navždy.
+ * @pre Nevolat z UI vlákna (blokuje do zavření dialogu).
  */
-char *baseui_filechooser_open_dir_wait(const char *title, const char *path, const char *fileName, const char *filePathName)
+char *baseui_filechooser_open_dir_wait(baseui_fchooser_category_t category, const char *title, const char *path, const char *fileName, const char *filePathName)
 {
-    baseui_fchooser_t *fch = baseui_filechooser_open_dir(title, path, fileName, filePathName, NULL, NULL);
+    /* Bez GUI by dialog nikdo nezavřel - vrátit "zrušeno" hned. */
+    if (!baseui_filechooser_can_wait())
+    {
+        return NULL;
+    };
+    baseui_fchooser_t *fch = baseui_filechooser_open_dir(category, title, path, fileName, filePathName, NULL, NULL);
     if (fch == NULL)
     {
         return NULL;
@@ -304,17 +371,31 @@ char *baseui_filechooser_open_dir_wait(const char *title, const char *path, cons
 
 /**
  * @brief Otevře dialog pro výběr souboru pro čtení a zápis, nebo vytvoření nového souboru a vrátí vybraný soubor. Čeká na dokončení dialog
+ * @param category Kategorie souboru pro paměť posledního adresáře (baseui_fchooser_lastdir.h)
  * @param title Titulek dialogu
  * @param filter Filtr souborů
- * @param path Výchozí cesta
+ * @param path Výchozí adresář; NULL nebo "." = zapamatovaný adresář kategorie (viz baseui_fchooser_lastdir_resolve())
  * @param fileName Výchozí název souboru
- * @param filePathName Plná cesta a název souboru k otevření
+ * @param filePathName Plná cesta a název souboru k otevření; má přednost před path, pokud jeho adresář existuje
  * @param selected_path Ukazatel na proměnnou, kam se uloží vybraný adresář (pouze pokud neni NULL)
- * @return Vybraný soubor, nebo NULL
+ * @return Vybraný soubor (vlastní ho volající, uvolnit g_free()), nebo NULL
+ *         při zrušení dialogu, ukončení aplikace nebo bez GUI.
+ *
+ * @note Bez interaktivního GUI (--headless, --mcp-pipe) dialog vůbec
+ *       neotevře a hned vrátí NULL (viz baseui_filechooser_can_wait()),
+ *       jinak by volající vlákno čekalo navždy.
+ * @pre Nevolat z UI vlákna (blokuje do zavření dialogu).
  */
-char *baseui_filechooser_open_rw_file_wait(const char *title, const char *filter, const char *path, const char *fileName, const char *filePathName, char **selected_path)
+char *baseui_filechooser_open_rw_file_wait(baseui_fchooser_category_t category, const char *title, const char *filter, const char *path, const char *fileName, const char *filePathName, char **selected_path)
 {
-    baseui_fchooser_t *fch = baseui_filechooser_open_rw_file(title, filter, path, fileName, filePathName, NULL, NULL);
+    /* Bez GUI by dialog nikdo nezavřel - vrátit "zrušeno" hned. */
+    if (!baseui_filechooser_can_wait())
+    {
+        if (selected_path != NULL)
+            *selected_path = NULL;
+        return NULL;
+    };
+    baseui_fchooser_t *fch = baseui_filechooser_open_rw_file(category, title, filter, path, fileName, filePathName, NULL, NULL);
     if (fch == NULL)
     {
         if (selected_path != NULL)
@@ -326,17 +407,31 @@ char *baseui_filechooser_open_rw_file_wait(const char *title, const char *filter
 
 /**
  * @brief Otevře dialog pro výběr souboru pro zápis (vytvoření) a vrátí vybraný soubor. Čeká na dokončení dialogu.
+ * @param category Kategorie souboru pro paměť posledního adresáře (baseui_fchooser_lastdir.h)
  * @param title Titulek dialogu
  * @param filter Filtr souborů
- * @param path Výchozí cesta
+ * @param path Výchozí adresář; NULL nebo "." = zapamatovaný adresář kategorie (viz baseui_fchooser_lastdir_resolve())
  * @param fileName Výchozí název souboru
- * @param filePathName Plná cesta a název souboru k otevření
+ * @param filePathName Plná cesta a název souboru k otevření; má přednost před path, pokud jeho adresář existuje
  * @param selected_path Ukazatel na proměnnou, kam se uloží vybraný adresář (pouze pokud neni NULL)
- * @return Vybraný soubor, nebo NULL
+ * @return Vybraný soubor (vlastní ho volající, uvolnit g_free()), nebo NULL
+ *         při zrušení dialogu, ukončení aplikace nebo bez GUI.
+ *
+ * @note Bez interaktivního GUI (--headless, --mcp-pipe) dialog vůbec
+ *       neotevře a hned vrátí NULL (viz baseui_filechooser_can_wait()),
+ *       jinak by volající vlákno čekalo navždy.
+ * @pre Nevolat z UI vlákna (blokuje do zavření dialogu).
  */
-char *baseui_filechooser_save_file_wait(const char *title, const char *filter, const char *path, const char *fileName, const char *filePathName, char **selected_path)
+char *baseui_filechooser_save_file_wait(baseui_fchooser_category_t category, const char *title, const char *filter, const char *path, const char *fileName, const char *filePathName, char **selected_path)
 {
-    baseui_fchooser_t *fch = baseui_filechooser_save_file(title, filter, path, fileName, filePathName, NULL, NULL);
+    /* Bez GUI by dialog nikdo nezavřel - vrátit "zrušeno" hned. */
+    if (!baseui_filechooser_can_wait())
+    {
+        if (selected_path != NULL)
+            *selected_path = NULL;
+        return NULL;
+    };
+    baseui_fchooser_t *fch = baseui_filechooser_save_file(category, title, filter, path, fileName, filePathName, NULL, NULL);
     if (fch == NULL)
     {
         if (selected_path != NULL)

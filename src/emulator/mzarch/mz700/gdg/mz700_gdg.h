@@ -141,7 +141,27 @@ extern "C"
 
 #define gdg_compute_total_ticks(now_ticks) (now_ticks + ((uint64_t)g_gdg.total_elapsed.screens * VIDEO_SCREEN_TICKS))
 #define gdg_get_total_ticks() gdg_compute_total_ticks(g_gdg.total_elapsed.ticks)
-#define gdg_get_insigeop_ticks() (g_gdg.total_elapsed.ticks + g_mzarch_main.instruction_insideop_sync_ticks)
+/**
+ * @brief Okamžik právě probíhajícího přístupu na sběrnici (IORQ, MMIO) v tikách GDG.
+ *
+ * Callback sběrnice nejdřív zavolá mzarch_main_insideop_*(), která posune
+ * g_gdg.total_elapsed.ticks na aktuální T-stav instrukce (cpu->op_tstate,
+ * u PSG a VRAM včetně čekacích stavů) a stejný posun zapíše do
+ * g_mzarch_main.instruction_insideop_sync_ticks. Čas přístupu je proto
+ * přímo g_gdg.total_elapsed.ticks. Dřívější přičtení
+ * instruction_insideop_sync_ticks započítalo provedenou část instrukce
+ * dvakrát a datovalo zápisy do CTC, PIO 8255 (beeper) a DMD o tuto část
+ * později (u přístupu v posledním M-cyklu až za konec instrukce).
+ *
+ * Mezi instrukcemi (drain fronty debuggeru, dbgapi) je posun nulový
+ * a výsledkem je konec předchozí instrukce.
+ *
+ * @return Tiky od začátku aktuálního snímku (bez g_gdg.total_elapsed.screens;
+ *         na celkový čas převádí gdg_compute_total_ticks()).
+ * @pre Volat z emu vlákna.
+ */
+#define gdg_get_insigeop_ticks() (g_gdg.total_elapsed.ticks)
+
 #define gdg_proximate_clk1m1_event(now_ticks) (now_ticks + (GDGCLK_CTC0_DIVIDER - (gdg_compute_total_ticks(now_ticks) % GDGCLK_CTC0_DIVIDER)))
 #define gdg_get_event_pointer() (&g_gdg.event)
 #define gdg_get_regct53g7() (g_gdg.regct53g7)
@@ -152,11 +172,31 @@ extern "C"
 #define gdg_1m1_on_screen_done_event() {g_gdg.ctc0clk++;}
 #endif
 
+/**
+ * @brief Uzavře snímek: zvýší čítač snímků a odečte délku snímku od tiků.
+ *
+ * Volá se jen z gdg_process_events() při zpracování události konce
+ * posledního řádku. V tu chvíli platí
+ * g_gdg.total_elapsed.ticks >= VIDEO_SCREEN_TICKS (událost má ticks ==
+ * VIDEO_SCREEN_TICKS). Pokud by to neplatilo (konec snímku zpracovaný
+ * dvakrát), unsigned odečet by přetekl na ~2^32 a emulace by minuty
+ * zpracovávala události bez instrukcí. Pojistka to nahlásí přes
+ * mzarch_main_report_screen_done_underflow() a tiky srovná na 0.
+ * Kontrola je jednou za snímek, ne v per-instruction hot path.
+ */
 #define gdg_on_screen_done_event()                       \
     {                                                    \
         g_gdg.total_elapsed.screens++;                   \
         g_mzarch_main.cursor_timer++;                          \
-        g_gdg.total_elapsed.ticks -= VIDEO_SCREEN_TICKS; \
+        if (g_gdg.total_elapsed.ticks >= VIDEO_SCREEN_TICKS) \
+        {                                                \
+            g_gdg.total_elapsed.ticks -= VIDEO_SCREEN_TICKS; \
+        }                                                \
+        else                                             \
+        {                                                \
+            mzarch_main_report_screen_done_underflow(g_gdg.total_elapsed.ticks); \
+            g_gdg.total_elapsed.ticks = 0;               \
+        }                                                \
         g_gdg.beam_row = 0;                              \
         gdg_1m1_on_screen_done_event();                  \
     }

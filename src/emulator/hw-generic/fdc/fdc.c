@@ -124,7 +124,7 @@ static int fdc_drive_flush_to_file(st_FDDrive *drv);
  * @param fdc instance FDC řadiče (NULL = vrátí "FDC").
  * @return statický C-string s názvem sekce, nikdy NULL.
  */
-static const char *fdc_cfg_section_name(const st_FDC *fdc)
+const char *fdc_cfg_section_name(const st_FDC *fdc)
 {
     if (fdc && fdc->index == FDC1)
         return "FDC1";
@@ -1141,7 +1141,7 @@ void fdc_ui_mount(st_FDC *fdc, unsigned drive_id)
     /* user_data nese zabalený (fdc_index << 8) | drive_id - callback tak ví,
      * do které instance FDC mountovat (jinak má jen drive_id). */
     int packed = (int)((fdc->index << 8) | drive_id);
-    baseui_fchooser_t *fch = baseui_filechooser_open_file(str->str, ".dsk", NULL, NULL, fdc->drive[drive_id].filename, fdc_ui_mount_cb, GINT_TO_POINTER(packed));
+    baseui_fchooser_t *fch = baseui_filechooser_open_file(BASEUI_FCHOOSER_CAT_DSK, str->str, ".dsk", NULL, NULL, fdc->drive[drive_id].filename, fdc_ui_mount_cb, GINT_TO_POINTER(packed));
     if (!fch)
     {
         fprintf(stderr, "%s(%d): filechooser error\n", __FILE__, __LINE__);
